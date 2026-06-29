@@ -1,0 +1,89 @@
+version: "3.9"
+
+networks:
+  diabetes-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  model-storage:
+
+services:
+
+  # --- Base de données ---
+  postgres:
+    image: postgres:15-alpine
+    container_name: diabetes-postgres
+    env_file: .env
+    environment:
+      POSTGRES_USER: diabetes_user
+      POSTGRES_PASSWORD: MettreIciUnMotDePasseForte123!
+      POSTGRES_DB: diabetes_db
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - diabetes-net
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U diabetes_user -d diabetes_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # --- Pipeline ETL ---
+  etl:
+    build:
+      context: ./etl
+      dockerfile: Dockerfile
+    container_name: diabetes-etl
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data:ro
+      - ./etl:/app/etl
+    networks:
+      - diabetes-net
+    restart: "no"
+
+  # --- Service ML + API FastAPI ---
+  ml-service:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    container_name: diabetes-ml
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - model-storage:/app/models
+      - ./ml:/app/ml
+    ports:
+      - "8000:8000"
+    networks:
+      - diabetes-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # --- Dashboard Streamlit ---
+  streamlit:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: diabetes-dashboard
+    env_file: .env
+    depends_on:
+      - ml-service
+    ports:
+      - "8501:8501"
+    networks:
+      - diabetes-net
+    restart: unless-stopped

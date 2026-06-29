@@ -1,0 +1,15 @@
+.env
+*.pkl
+*.joblib
+__pycache__/
+*.pyc
+*.pyo
+data/raw/
+models/
+.DS_Store
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
