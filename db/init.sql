@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS patients (
     change_in_meds          VARCHAR(10),
     diabetes_meds           VARCHAR(10),
 
-    -- Médicaments (24 colonnes)
+    -- Médicaments (21 colonnes)
     metformin               VARCHAR(10),
     repaglinide             VARCHAR(10),
     nateglinide             VARCHAR(10),
@@ -48,29 +48,29 @@ CREATE TABLE IF NOT EXISTS patients (
     glimepiride             VARCHAR(10),
     acetohexamide           VARCHAR(10),
     glipizide               VARCHAR(10),
-    glyburide               VARCHAR(10),
-    tolbutamide             VARCHAR(10),
-    pioglitazone            VARCHAR(10),
-    rosiglitazone           VARCHAR(10),
-    acarbose                VARCHAR(10),
-    miglitol                VARCHAR(10),
-    troglitazone            VARCHAR(10),
-    tolazamide              VARCHAR(10),
-    insulin                 VARCHAR(10),
-    glyburide_metformin     VARCHAR(10),
-    glipizide_metformin     VARCHAR(10),
-    glimepiride_pioglitazone VARCHAR(10),
-    metformin_rosiglitazone VARCHAR(10),
-    metformin_pioglitazone  VARCHAR(10),
+    glyburide                VARCHAR(10),
+    tolbutamide              VARCHAR(10),
+    pioglitazone             VARCHAR(10),
+    rosiglitazone            VARCHAR(10),
+    acarbose                 VARCHAR(10),
+    miglitol                 VARCHAR(10),
+    troglitazone             VARCHAR(10),
+    tolazamide                VARCHAR(10),
+    insulin                   VARCHAR(10),
+    glyburide_metformin       VARCHAR(10),
+    glipizide_metformin       VARCHAR(10),
+    glimepiride_pioglitazone  VARCHAR(10),
+    metformin_rosiglitazone   VARCHAR(10),
+    metformin_pioglitazone    VARCHAR(10),
 
     -- Features dérivées ETL
-    meds_per_day            FLOAT,
-    total_visits            INTEGER,
+    meds_per_day             FLOAT,
+    total_visits              INTEGER,
 
     -- Cible
-    readmitted              VARCHAR(10),
-    readmitted_30           INTEGER,
-    created_at              TIMESTAMP DEFAULT NOW()
+    readmitted                VARCHAR(10),
+    readmitted_30              INTEGER,
+    created_at                 TIMESTAMP DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS predictions (
@@ -84,6 +84,8 @@ CREATE TABLE IF NOT EXISTS predictions (
     predicted_at    TIMESTAMP DEFAULT NOW()
 );
 
+-- Table users : désormais réellement utilisée par l'API (voir ml/api.py)
+-- password_hash est un hash bcrypt (jamais de mot de passe en clair)
 CREATE TABLE IF NOT EXISTS users (
     id              SERIAL PRIMARY KEY,
     username        VARCHAR(50) UNIQUE NOT NULL,
@@ -94,11 +96,23 @@ CREATE TABLE IF NOT EXISTS users (
     created_at      TIMESTAMP DEFAULT NOW()
 );
 
+-- Journal d'audit : qui a consulté/quoi, au-delà des seules prédictions
+CREATE TABLE IF NOT EXISTS audit_log (
+    id              SERIAL PRIMARY KEY,
+    username        VARCHAR(50) NOT NULL,
+    action          VARCHAR(50) NOT NULL,   -- ex: LOGIN, PREDICT, PREDICT_BATCH, VIEW_HISTORY, DOWNLOAD_PDF
+    detail          JSONB,
+    ip_address      VARCHAR(64),
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_patients_readmitted   ON patients(readmitted_30);
 CREATE INDEX IF NOT EXISTS idx_patients_age          ON patients(age_num);
 CREATE INDEX IF NOT EXISTS idx_patients_insulin      ON patients(insulin);
 CREATE INDEX IF NOT EXISTS idx_predictions_encounter ON predictions(encounter_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_date      ON predictions(predicted_at);
+CREATE INDEX IF NOT EXISTS idx_users_username        ON users(username);
+CREATE INDEX IF NOT EXISTS idx_audit_username_date   ON audit_log(username, created_at);
 
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO diabetes_readonly;
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Dashboard ClinAI v4 — Mode clair/sombre + historique corrigé
 """
 import os, requests, streamlit as st, pandas as pd, plotly.graph_objects as go
@@ -164,6 +164,12 @@ with st.sidebar:
     except: pass
 
     st.markdown(f'<hr style="border:none;border-top:1px solid {BORDER};margin:1rem 0;">', unsafe_allow_html=True)
+    st.markdown(f'<div class="section-label">Seuils de risque</div>', unsafe_allow_html=True)
+    st.caption("Ajuste les seuils selon ta tolérance clinique")
+    seuil_eleve  = st.slider("Seuil risque élevé (%)",  min_value=30, max_value=80, value=50, step=5, key="seuil_eleve")
+    seuil_modere = st.slider("Seuil risque modéré (%)", min_value=10, max_value=max(seuil_eleve-5,15), value=min(30,seuil_eleve-5), step=5, key="seuil_modere")
+    st.markdown(f'<div style="background:{"#0d1626" if D else "#EFF6FF"};border-radius:8px;padding:0.6rem 0.8rem;font-size:0.78rem;color:{MUTED};margin-top:0.3rem;">Faible : 0-{seuil_modere}% | Modéré : {seuil_modere}-{seuil_eleve}% | Élevé : {seuil_eleve}-100%</div>', unsafe_allow_html=True)
+    st.markdown(f'<hr style="border:none;border-top:1px solid {BORDER};margin:1rem 0;">', unsafe_allow_html=True)
     if st.button("Déconnexion", use_container_width=True): st.session_state.token=None; st.rerun()
 
 # ── HERO ──────────────────────────────────────────────────────────
@@ -179,7 +185,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-tab_predict, tab_history, tab_stats = st.tabs(["  🔍 Nouvelle prédiction  ","  📋 Historique  ","  📊 Statistiques  "])
+tab_predict, tab_history, tab_stats, tab_compare = st.tabs(["  🔍 Nouvelle prédiction  ","  📋 Historique  ","  📊 Statistiques  ","  ⚖️ Comparaison  "])
 
 # ══════════════════════════════════════════════════════════════════
 # ONGLET 1 — PRÉDICTION
@@ -233,21 +239,28 @@ with tab_predict:
                     resp = requests.post(f"{API_URL}/predict", json=payload, headers=api_headers(), timeout=10)
                     handle_401(resp)
                     if resp.status_code == 200:
-                        result = resp.json(); score = result["risk_score"]; level = result["risk_level"]
+                        result = resp.json(); score = result["risk_score"]
+                        # Seuils personnalisés
+                        seuil_e = st.session_state.get("seuil_eleve", 50) / 100
+                        seuil_m = st.session_state.get("seuil_modere", 30) / 100
+                        if score >= seuil_e:   level = "ÉLEVÉ"
+                        elif score >= seuil_m: level = "MODÉRÉ"
+                        else:                  level = "FAIBLE"
                         color_map = {"ÉLEVÉ":"#EF4444","MODÉRÉ":"#F59E0B","FAIBLE":"#22C55E"}
                         gauge_color = color_map.get(level,"#1B4FD8")
                         fig = go.Figure(go.Indicator(
-                            mode="gauge+number", value=round(score*100,1),
-                            number={"suffix":"%","font":{"size":46,"color":gauge_color,"family":"DM Serif Display"}},
+                            mode="gauge", value=round(score*100,1),
+                            domain={"x": [0, 1], "y": [0, 1]},
                             gauge={"axis":{"range":[0,100],"tickcolor":BORDER,"tickfont":{"color":MUTED,"size":11}},
                                    "bar":{"color":gauge_color,"thickness":0.22},"bgcolor":CARD,
                                    "bordercolor":BORDER,"borderwidth":1,
                                    "steps":[{"range":[0,30],"color":"#F0FDF4" if not D else "#0d1f17"},
                                             {"range":[30,50],"color":"#FFFBEB" if not D else "#171208"},
                                             {"range":[50,100],"color":"#FEF2F2" if not D else "#1f1315"}],
-                                   "threshold":{"line":{"color":"#EF4444","width":2},"value":50}}))
+                                   "threshold":{"line":{"color":"#EF4444","width":2},"value":st.session_state.get("seuil_eleve",50)}}))
                         fig.update_layout(height=220,margin=dict(t=20,b=0,l=20,r=20),paper_bgcolor=PLOTBG,plot_bgcolor=PLOTBG,font=dict(family="DM Sans"))
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, use_container_width=True, key=f"gauge_main_{score:.4f}")
+                        st.markdown(f'<div style="text-align:center;margin-top:-95px;margin-bottom:35px;font-family:\'DM Serif Display\',serif;font-size:2.2rem;font-weight:700;color:{gauge_color};pointer-events:none;">{score:.1%}</div>', unsafe_allow_html=True)
                         css = {"ÉLEVÉ":"risk-high","MODÉRÉ":"risk-medium","FAIBLE":"risk-low"}[level]
                         ico = {"ÉLEVÉ":"🔴","MODÉRÉ":"🟡","FAIBLE":"🟢"}[level]
                         st.markdown(f'<div class="{css}"><b style="font-size:1rem;">{ico} Risque {level}</b><span style="float:right;font-family:JetBrains Mono,monospace;font-size:0.9rem;">{score:.1%}</span></div>', unsafe_allow_html=True)
@@ -266,6 +279,17 @@ with tab_predict:
                             textfont=dict(size=11,color=MUTED,family="JetBrains Mono")))
                         fig2.update_layout(height=250,margin=dict(t=5,b=5,l=5,r=80),xaxis_title="Impact",xaxis_zeroline=True,xaxis_zerolinecolor=BORDER,**PLOTLY_THEME)
                         st.plotly_chart(fig2, use_container_width=True)
+                        # PDF button
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        st.markdown('<div class="section-label">Rapport</div>', unsafe_allow_html=True)
+                        try:
+                            pdf_resp = requests.post(f"{API_URL}/predict/pdf", json=payload, headers=api_headers(), timeout=15)
+                            if pdf_resp.status_code == 200:
+                                st.download_button(label="📄 Télécharger le rapport PDF", data=pdf_resp.content, file_name=f"rapport_ClinAI_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
+                            else:
+                                st.markdown('<div class="alert-warn">⚠️ Rapport PDF indisponible.</div>', unsafe_allow_html=True)
+                        except Exception:
+                            st.markdown('<div class="alert-warn">⚠️ Rapport PDF indisponible.</div>', unsafe_allow_html=True)
                     else:
                         st.markdown(f'<div class="alert-err">❌ Erreur API {resp.status_code} — {resp.text[:200]}</div>', unsafe_allow_html=True)
                 except requests.exceptions.ConnectionError:
@@ -367,6 +391,65 @@ with tab_stats:
                             xaxis=dict(title="|SHAP| moyen",gridcolor=GRIDC,linecolor=BORDER),
                             yaxis=dict(categoryorder="total ascending",gridcolor=GRIDC,linecolor=BORDER))
                         st.plotly_chart(fig_f,use_container_width=True)
+                # ── SHAP Global étendu ───────────────────────────────
+                if s["top_factors_global"]:
+                    st.markdown(f'<hr style="border:none;border-top:1px solid {BORDER};margin:0.5rem 0 1rem;">',unsafe_allow_html=True)
+                    st.markdown('<div class="section-label">Analyse SHAP globale — Impact moyen sur toutes les prédictions</div>',unsafe_allow_html=True)
+                    st.caption("Montre quelles features ont le plus influencé les prédictions en moyenne. Plus la barre est longue, plus la feature est importante.")
+
+                    df_shap = pd.DataFrame(s["top_factors_global"])
+                    df_shap = df_shap.sort_values("mean_abs_shap", ascending=True)
+                    df_shap["feature_clean"] = df_shap["feature"].str.replace("_", " ").str.title()
+
+                    # Couleur dégradée selon importance
+                    max_val = df_shap["mean_abs_shap"].max()
+                    colors_shap = [f"rgba(27,79,216,{0.3 + 0.7*(v/max_val):.2f})" for v in df_shap["mean_abs_shap"]]
+
+                    fig_shap = go.Figure()
+                    fig_shap.add_trace(go.Bar(
+                        x=df_shap["mean_abs_shap"],
+                        y=df_shap["feature_clean"],
+                        orientation="h",
+                        marker_color=colors_shap,
+                        marker_line_width=0,
+                        text=[f"{v:.4f}" for v in df_shap["mean_abs_shap"]],
+                        textposition="outside",
+                        textfont=dict(size=10, color=MUTED, family="JetBrains Mono"),
+                        hovertemplate="<b>%{y}</b><br>Impact SHAP moyen : %{x:.4f}<extra></extra>",
+                    ))
+
+                    # Ligne médiane
+                    median_val = float(df_shap["mean_abs_shap"].median())
+                    fig_shap.add_vline(
+                        x=median_val,
+                        line_dash="dash",
+                        line_color=MUTED,
+                        annotation_text=f"Médiane ({median_val:.4f})",
+                        annotation_position="top",
+                        annotation_font_size=9,
+                        annotation_font_color=MUTED,
+                    )
+
+                    fig_shap.update_layout(
+                        height=max(350, len(df_shap)*30),
+                        margin=dict(t=30, b=20, l=10, r=80),
+                        paper_bgcolor=PLOTBG,
+                        plot_bgcolor=PLOTBG,
+                        font=dict(color=MUTED, family="DM Sans"),
+                        xaxis=dict(title="|SHAP| moyen", gridcolor=GRIDC, linecolor=BORDER, tickfont=dict(size=10)),
+                        yaxis=dict(gridcolor=GRIDC, linecolor=BORDER, tickfont=dict(size=10)),
+                    )
+                    st.plotly_chart(fig_shap, use_container_width=True)
+
+                    # Tableau détaillé
+                    with st.expander("📋 Voir le tableau détaillé"):
+                        df_display = df_shap[["feature_clean","mean_abs_shap"]].copy()
+                        df_display.columns = ["Feature", "|SHAP| moyen"]
+                        df_display["|SHAP| moyen"] = df_display["|SHAP| moyen"].round(5)
+                        df_display["Rang"] = range(len(df_display), 0, -1)
+                        df_display = df_display[["Rang","Feature","|SHAP| moyen"]].sort_values("Rang")
+                        st.dataframe(df_display, use_container_width=True, hide_index=True)
+
                 if s["trend"]:
                     st.markdown(f'<hr style="border:none;border-top:1px solid {BORDER};margin:0.5rem 0 1rem;">',unsafe_allow_html=True)
                     st.markdown('<div class="section-label">Activité — 30 derniers jours</div>',unsafe_allow_html=True)
@@ -387,3 +470,171 @@ with tab_stats:
                     st.plotly_chart(fig_t,use_container_width=True)
     except requests.exceptions.ConnectionError:
         st.markdown('<div class="alert-err">🔌 API ml-service inaccessible.</div>',unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════
+# ONGLET 4 — COMPARAISON DE DEUX PATIENTS
+# ══════════════════════════════════════════════════════════════════
+with tab_compare:
+    st.markdown('<div class="section-label">Comparaison de deux profils patients</div>', unsafe_allow_html=True)
+    st.caption("Saisissez les données de deux patients pour comparer leurs scores de risque et facteurs déterminants.")
+
+    col_p1, col_sep, col_p2 = st.columns([1, 0.05, 1], gap="small")
+
+    def patient_form(col, label, key_prefix):
+        with col:
+            st.markdown(f'<div style="background:{"#161b22" if D else "#EFF6FF"};border-radius:10px;padding:1rem 1.2rem;border:1px solid {BORDER};margin-bottom:1rem;"><b style="color:{ACCENT};">{label}</b></div>', unsafe_allow_html=True)
+            age   = st.slider("Âge", 0, 100, 65, key=f"{key_prefix}_age")
+            g1,g2 = st.columns(2)
+            gender = g1.selectbox("Genre",   ["Female","Male","Unknown"], key=f"{key_prefix}_gender")
+            race   = g2.selectbox("Origine", ["Caucasian","AfricanAmerican","Hispanic","Asian","Other","Unknown"], key=f"{key_prefix}_race")
+            h1,h2 = st.columns(2)
+            time_h = h1.number_input("Durée séjour (j)", 1, 30, 5,  key=f"{key_prefix}_time")
+            n_meds = h2.number_input("Médicaments",      0, 100, 15, key=f"{key_prefix}_meds")
+            h3,h4 = st.columns(2)
+            n_lab  = h3.number_input("Procédures labo", 0, 130, 40, key=f"{key_prefix}_lab")
+            n_proc = h4.number_input("Procédures",      0, 10,  1,  key=f"{key_prefix}_proc")
+            n_diag = st.number_input("Diagnostics",     1, 16,  7,  key=f"{key_prefix}_diag")
+            p1c,p2c,p3c = st.columns(3)
+            n_out  = p1c.number_input("Ambul.", 0, 50, 0, key=f"{key_prefix}_out")
+            n_emer = p2c.number_input("Urg.",   0, 50, 0, key=f"{key_prefix}_emer")
+            n_inp  = p3c.number_input("Hosp.",  0, 20, 1, key=f"{key_prefix}_inp")
+            r1,r2 = st.columns(2)
+            a1c    = r1.selectbox("HbA1c",          ["None","Norm",">7",">8"], key=f"{key_prefix}_a1c")
+            glucose= r2.selectbox("Glucose",        ["None","Norm",">200",">300"], key=f"{key_prefix}_gluc")
+            r3,r4 = st.columns(2)
+            change = r3.selectbox("Chgt médication", ["No","Ch"],  key=f"{key_prefix}_change")
+            diab   = r4.selectbox("Anti-diab.",      ["Yes","No"], key=f"{key_prefix}_diab")
+            return {
+                "age_num":age,"gender":gender,"race":race,
+                "time_in_hospital":time_h,"num_medications":n_meds,
+                "num_lab_procedures":n_lab,"num_procedures":n_proc,
+                "number_diagnoses":n_diag,"num_outpatient":n_out,
+                "num_emergency":n_emer,"num_inpatient":n_inp,
+                "a1c_result":a1c,"glucose_serum":glucose,
+                "change_in_meds":change,"diabetes_meds":diab,
+            }
+
+    p1_data = patient_form(col_p1, "👤 Patient A", "p1")
+    with col_sep:
+        st.markdown(f'<div style="border-left:2px dashed {BORDER};height:100%;margin:0 auto;width:1px;"></div>', unsafe_allow_html=True)
+    p2_data = patient_form(col_p2, "👤 Patient B", "p2")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    compare_btn = st.button("⚖️ Comparer les deux patients", use_container_width=True, key="compare_btn")
+
+    if compare_btn:
+        with st.spinner("Analyse en cours..."):
+            try:
+                batch_payload = {"patients": [
+                    {**p1_data, "patient_label": "A"},
+                    {**p2_data, "patient_label": "B"},
+                ]}
+                rb = requests.post(f"{API_URL}/predict/batch", json=batch_payload, headers=api_headers(), timeout=15)
+
+                if rb.status_code == 200:
+                    res1, res2 = rb.json()
+                    s1 = res1["risk_score"]; s2 = res2["risk_score"]
+
+                    seuil_e = st.session_state.get("seuil_eleve", 50) / 100
+                    seuil_m = st.session_state.get("seuil_modere", 30) / 100
+
+                    def get_level(score):
+                        if score >= seuil_e:   return "ÉLEVÉ"
+                        elif score >= seuil_m: return "MODÉRÉ"
+                        else:                  return "FAIBLE"
+
+                    l1 = get_level(s1); l2 = get_level(s2)
+                    color_map = {"ÉLEVÉ":"#EF4444","MODÉRÉ":"#F59E0B","FAIBLE":"#22C55E"}
+                    css_map   = {"ÉLEVÉ":"risk-high","MODÉRÉ":"risk-medium","FAIBLE":"risk-low"}
+                    ico_map   = {"ÉLEVÉ":"🔴","MODÉRÉ":"🟡","FAIBLE":"🟢"}
+
+                    st.markdown(f'<hr style="border:none;border-top:1px solid {BORDER};margin:1rem 0;">', unsafe_allow_html=True)
+                    st.markdown('<div class="section-label">Résultats de comparaison</div>', unsafe_allow_html=True)
+
+                    # Scores côte à côte
+                    rc1, rc2 = st.columns(2)
+                    with rc1:
+                        fig1 = go.Figure(go.Indicator(
+                            mode="gauge", value=round(s1*100,1),
+                            domain={"x":[0,1],"y":[0,1]},
+                            title={"text":"Patient A","font":{"size":13,"color":MUTED}},
+                            gauge={"axis":{"range":[0,100],"tickcolor":BORDER},
+                                   "bar":{"color":color_map[l1],"thickness":0.22},
+                                   "bgcolor":CARD,"bordercolor":BORDER,
+                                   "steps":[{"range":[0,seuil_m*100],"color":"#F0FDF4" if not D else "#0d1f17"},
+                                            {"range":[seuil_m*100,seuil_e*100],"color":"#FFFBEB" if not D else "#171208"},
+                                            {"range":[seuil_e*100,100],"color":"#FEF2F2" if not D else "#1f1315"}],
+                                   "threshold":{"line":{"color":"#EF4444","width":2},"value":seuil_e*100}}))
+                        fig1.update_layout(height=280,margin=dict(t=40,b=20,l=30,r=30),paper_bgcolor=PLOTBG,plot_bgcolor=PLOTBG)
+                        st.plotly_chart(fig1, use_container_width=True, key=f"gauge_cmp_a_{s1:.4f}")
+                        st.markdown(f'<div style="text-align:center;margin-top:-115px;margin-bottom:35px;font-family:\'DM Serif Display\',serif;font-size:1.9rem;font-weight:700;color:{color_map[l1]};pointer-events:none;">{s1:.1%}</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="{css_map[l1]}" style="text-align:center;"><b>{ico_map[l1]} Risque {l1}</b> — {s1:.1%}</div>', unsafe_allow_html=True)
+
+                    with rc2:
+                        fig2 = go.Figure(go.Indicator(
+                            mode="gauge", value=round(s2*100,1),
+                            domain={"x":[0,1],"y":[0,1]},
+                            title={"text":"Patient B","font":{"size":13,"color":MUTED}},
+                            gauge={"axis":{"range":[0,100],"tickcolor":BORDER},
+                                   "bar":{"color":color_map[l2],"thickness":0.22},
+                                   "bgcolor":CARD,"bordercolor":BORDER,
+                                   "steps":[{"range":[0,seuil_m*100],"color":"#F0FDF4" if not D else "#0d1f17"},
+                                            {"range":[seuil_m*100,seuil_e*100],"color":"#FFFBEB" if not D else "#171208"},
+                                            {"range":[seuil_e*100,100],"color":"#FEF2F2" if not D else "#1f1315"}],
+                                   "threshold":{"line":{"color":"#EF4444","width":2},"value":seuil_e*100}}))
+                        fig2.update_layout(height=280,margin=dict(t=40,b=20,l=30,r=30),paper_bgcolor=PLOTBG,plot_bgcolor=PLOTBG)
+                        st.plotly_chart(fig2, use_container_width=True, key=f"gauge_cmp_b_{s2:.4f}")
+                        st.markdown(f'<div style="text-align:center;margin-top:-115px;margin-bottom:35px;font-family:\'DM Serif Display\',serif;font-size:1.9rem;font-weight:700;color:{color_map[l2]};pointer-events:none;">{s2:.1%}</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="{css_map[l2]}" style="text-align:center;"><b>{ico_map[l2]} Risque {l2}</b> — {s2:.1%}</div>', unsafe_allow_html=True)
+
+                    # Verdict
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    diff = abs(s1 - s2) * 100
+                    if s1 > s2:
+                        st.markdown(f'<div class="alert-warn">⚖️ <b>Patient A est plus à risque</b> que Patient B — différence de {diff:.1f} points de pourcentage.</div>', unsafe_allow_html=True)
+                    elif s2 > s1:
+                        st.markdown(f'<div class="alert-warn">⚖️ <b>Patient B est plus à risque</b> que Patient A — différence de {diff:.1f} points de pourcentage.</div>', unsafe_allow_html=True)
+                    else:
+                        st.markdown(f'<div class="alert-info">⚖️ Les deux patients ont le <b>même niveau de risque</b>.</div>', unsafe_allow_html=True)
+
+                    # Comparaison SHAP
+                    st.markdown(f'<hr style="border:none;border-top:1px solid {BORDER};margin:1rem 0;">', unsafe_allow_html=True)
+                    st.markdown('<div class="section-label">Comparaison des facteurs SHAP</div>', unsafe_allow_html=True)
+
+                    f1_data = res1["top_factors"]; f2_data = res2["top_factors"]
+                    all_features = list(set(list(f1_data.keys()) + list(f2_data.keys())))
+                    v1 = [f1_data.get(f, 0) for f in all_features]
+                    v2 = [f2_data.get(f, 0) for f in all_features]
+
+                    fig_comp = go.Figure()
+                    fig_comp.add_trace(go.Bar(name="Patient A", x=all_features, y=v1,
+                        marker_color="#1B4FD8", opacity=0.85, marker_line_width=0))
+                    fig_comp.add_trace(go.Bar(name="Patient B", x=all_features, y=v2,
+                        marker_color="#F59E0B", opacity=0.85, marker_line_width=0))
+                    fig_comp.update_layout(
+                        barmode="group", height=300,
+                        margin=dict(t=10,b=20,l=10,r=10),
+                        paper_bgcolor=PLOTBG, plot_bgcolor=PLOTBG,
+                        font=dict(color=MUTED, family="DM Sans"),
+                        xaxis=dict(gridcolor=GRIDC, linecolor=BORDER, tickangle=-30),
+                        yaxis=dict(title="Impact SHAP", gridcolor=GRIDC, linecolor=BORDER),
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                   xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
+                    )
+                    st.plotly_chart(fig_comp, use_container_width=True)
+
+                else:
+                    st.markdown('<div class="alert-err">❌ Erreur lors de la comparaison.</div>', unsafe_allow_html=True)
+
+            except requests.exceptions.ConnectionError:
+                st.markdown('<div class="alert-err">🔌 API ml-service inaccessible.</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div style="background:{CARD};border:1.5px dashed {BORDER};border-radius:14px;
+                    padding:2rem;text-align:center;margin-top:1rem;">
+          <div style="font-size:2rem;margin-bottom:0.8rem;">⚖️</div>
+          <div style="color:{MUTED};font-size:0.9rem;line-height:1.6;">
+            Remplis les données des deux patients<br>
+            puis clique sur <b style="color:{ACCENT};">Comparer les deux patients</b>
+          </div>
+        </div>""", unsafe_allow_html=True)

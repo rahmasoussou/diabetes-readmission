@@ -62,7 +62,7 @@ services:
         condition: service_healthy
     volumes:
       - model-storage:/app/models
-      - ./ml:/app/ml
+      - ./ml:/app
     ports:
       - "8000:8000"
     networks:

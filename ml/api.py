@@ -1,20 +1,30 @@
 """
-API FastAPI — Service de prédiction
-=====================================
+API FastAPI — Service de prédiction (v2)
+==========================================
 Endpoints :
-  GET  /health         — vérification santé (pas d'auth)
-  POST /token          — obtenir un JWT
-  POST /predict        — score de risque + SHAP (JWT requis)
-  GET  /model/info     — méta-données du modèle (JWT requis)
-  GET  /predictions    — historique paginé des prédictions (JWT requis)
-  GET  /stats          — statistiques agrégées du dashboard (JWT requis)
+  GET  /health              — vérification santé (pas d'auth)
+  POST /token                — obtenir un JWT (authentifie contre la table `users`)
+  POST /predict               — score de risque + SHAP (JWT requis)
+  POST /predict/batch          — score de risque pour plusieurs patients (JWT requis)
+  POST /predict/pdf             — rapport PDF (JWT requis)
+  GET  /model/info               — méta-données du modèle (JWT requis)
+  GET  /predictions               — historique paginé des prédictions (JWT requis)
+  GET  /stats                      — statistiques agrégées du dashboard (JWT requis)
+
+Changements v2 :
+  - Authentification multi-utilisateurs via la table `users` (bcrypt), fini le
+    compte unique DASHBOARD_USERNAME/DASHBOARD_PASSWORD partagé par tout le monde.
+    Les comptes se créent avec scripts/create_user.py.
+  - Journal d'audit (`audit_log`) pour toute action sensible.
+  - Endpoint /predict/batch pour scorer plusieurs patients en un seul appel.
+  - AUC injectée dynamiquement dans le rapport PDF (plus de valeur codée en dur).
 """
 
 import os
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 
 import joblib
 import numpy as np
@@ -22,9 +32,12 @@ import pandas as pd
 import shap
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Request, status, Query
+from fastapi.responses import StreamingResponse
+import io
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from jose import jwt, JWTError
+from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -42,17 +55,18 @@ logger = logging.getLogger(__name__)
 JWT_SECRET    = os.environ["JWT_SECRET_KEY"]
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_H  = int(os.environ.get("JWT_EXPIRE_HOURS", 1))
-MODEL_VERSION = os.environ.get("MODEL_VERSION", "v1")
+MODEL_VERSION_FALLBACK = os.environ.get("MODEL_VERSION", "unknown")
 
-DASHBOARD_USER = os.environ.get("DASHBOARD_USERNAME", "medecin")
-DASHBOARD_PASS = os.environ.get("DASHBOARD_PASSWORD")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+MAX_BATCH_SIZE = 50
 
 # ─── App ──────────────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="Diabetes Readmission API",
     description="Prédiction de réhospitalisation des patients diabétiques",
-    version="1.1.0",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url=None,
 )
@@ -74,24 +88,66 @@ encoders      = None
 feature_names = None
 model_meta    = {}
 
+MODEL_CANDIDATES = ["/app/models/xgboost_model.pkl", "/app/models/xgboost_v1.pkl"]
+
+
 @app.on_event("startup")
 def load_model():
     global model, explainer, encoders, feature_names, model_meta
     try:
-        model     = joblib.load("/app/models/xgboost_v1.pkl")
+        model_path = next((p for p in MODEL_CANDIDATES if os.path.exists(p)), None)
+        if model_path is None:
+            raise FileNotFoundError("Aucun modèle trouvé")
+        model     = joblib.load(model_path)
         explainer = joblib.load("/app/models/shap_explainer.pkl")
         encoders, feature_names = load_artifacts("/app/models")
         with open("/app/models/model_meta.json") as f:
             model_meta = json.load(f)
-        logger.info(f"Modèle chargé — AUC-ROC : {model_meta.get('auc_roc', 'N/A')} ✓")
+        logger.info(f"Modèle chargé ({model_path}) — AUC-ROC : {model_meta.get('auc_roc', 'N/A')} ✓")
     except FileNotFoundError:
         logger.warning("Modèle non trouvé. Lance d'abord : python train.py")
 
 
+def model_version() -> str:
+    return model_meta.get("version", MODEL_VERSION_FALLBACK)
+
+
+# ─── DB ───────────────────────────────────────────────────────────
+def get_engine():
+    u = os.environ["POSTGRES_USER"]
+    p = os.environ["POSTGRES_PASSWORD"]
+    h = os.environ["POSTGRES_HOST"]
+    d = os.environ["POSTGRES_DB"]
+    return create_engine(f"postgresql://{u}:{p}@{h}/{d}")
+
+
+def log_audit(username: str, action: str, detail: dict = None, ip: str = None) -> None:
+    """Best-effort : ne doit jamais faire échouer la requête appelante."""
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO audit_log (username, action, detail, ip_address)
+                    VALUES (:username, :action, CAST(:detail AS jsonb), :ip)
+                """),
+                {
+                    "username": username,
+                    "action": action,
+                    "detail": json.dumps(detail or {}),
+                    "ip": ip,
+                },
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Impossible d'écrire l'audit log : {e}")
+
+
 # ─── JWT ──────────────────────────────────────────────────────────
-def create_token(username: str) -> str:
+def create_token(username: str, role: str) -> str:
     payload = {
         "sub": username,
+        "role": role,
         "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRE_H),
         "iat": datetime.utcnow(),
     }
@@ -110,13 +166,39 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) 
         )
 
 
-# ─── DB ───────────────────────────────────────────────────────────
-def get_engine():
-    u = os.environ["POSTGRES_USER"]
-    p = os.environ["POSTGRES_PASSWORD"]
-    h = os.environ["POSTGRES_HOST"]
-    d = os.environ["POSTGRES_DB"]
-    return create_engine(f"postgresql://{u}:{p}@{h}/{d}")
+def authenticate_user(username: str, password: str) -> Optional[dict]:
+    """Vérifie les identifiants contre la table `users` (hash bcrypt)."""
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("""
+                    SELECT username, password_hash, role, is_active
+                    FROM users WHERE username = :username
+                """),
+                {"username": username},
+            ).fetchone()
+    except Exception as e:
+        logger.error(f"Erreur DB lors de l'authentification : {e}")
+        return None
+
+    if row is None or not row[3]:  # inexistant ou désactivé
+        return None
+    if not pwd_context.verify(password, row[1]):
+        return None
+
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            conn.execute(
+                text("UPDATE users SET last_login = NOW() WHERE username = :username"),
+                {"username": username},
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+    return {"username": row[0], "role": row[2]}
 
 
 # ─── Schémas Pydantic ─────────────────────────────────────────────
@@ -142,6 +224,7 @@ class PatientInput(BaseModel):
     diabetes_meds:      str   = Field("Yes")
     meds_per_day:       Optional[float] = None
     total_visits:       Optional[float] = None
+    patient_label:       Optional[str] = None  # libre, utile pour /predict/batch
 
     class Config:
         json_schema_extra = {
@@ -164,63 +247,45 @@ class PredictionResponse(BaseModel):
     model_version: str
 
 
-# ─── Endpoints ────────────────────────────────────────────────────
-@app.get("/health")
-def health():
-    return {
-        "status": "ok",
-        "model_loaded": model is not None,
-        "model_version": MODEL_VERSION,
-    }
+class BatchPredictionResponse(BaseModel):
+    patient_label: Optional[str] = None
+    risk_score:    float
+    risk_level:    str
+    top_factors:   dict
 
 
-@app.post("/token")
-@limiter.limit("10/minute")
-def login(request: Request, body: LoginRequest):
-    if body.username != DASHBOARD_USER or body.password != DASHBOARD_PASS:
-        raise HTTPException(status_code=401, detail="Identifiants incorrects")
-    token = create_token(body.username)
-    return {"access_token": token, "token_type": "bearer"}
+class BatchRequest(BaseModel):
+    patients: List[PatientInput]
 
 
-@app.post("/predict", response_model=PredictionResponse)
-@limiter.limit("30/minute")
-def predict(request: Request, patient: PatientInput, user: dict = Depends(verify_token)):
-    if model is None:
-        raise HTTPException(status_code=503, detail="Modèle non disponible. Lance train.py d'abord.")
-
+# ─── Fonctions internes partagées ─────────────────────────────────
+def _prepare_row(patient: PatientInput) -> dict:
     data_dict = patient.dict()
-
     if data_dict["meds_per_day"] is None:
         data_dict["meds_per_day"] = data_dict["num_medications"] / (data_dict["time_in_hospital"] + 1)
     if data_dict["total_visits"] is None:
         data_dict["total_visits"] = (
-            data_dict["num_outpatient"] +
-            data_dict["num_emergency"] +
-            data_dict["num_inpatient"]
+            data_dict["num_outpatient"] + data_dict["num_emergency"] + data_dict["num_inpatient"]
         )
+    return data_dict
 
-    df_input = pd.DataFrame([data_dict])
+
+def _risk_level(score: float) -> str:
+    if score >= 0.5:
+        return "ÉLEVÉ"
+    elif score >= 0.3:
+        return "MODÉRÉ"
+    return "FAIBLE"
+
+
+def _score_dataframe(df_input: pd.DataFrame):
     X = build_features(df_input, encoders)[feature_names]
-
-    risk_score = float(model.predict_proba(X)[0][1])
-
-    if risk_score >= 0.5:
-        risk_level = "ÉLEVÉ"
-    elif risk_score >= 0.3:
-        risk_level = "MODÉRÉ"
-    else:
-        risk_level = "FAIBLE"
-
+    scores = model.predict_proba(X)[:, 1]
     shap_vals = explainer.shap_values(X)
-    explanations = {
-        feat: round(float(val), 4)
-        for feat, val in zip(feature_names, shap_vals[0])
-    }
-    top_factors = dict(
-        sorted(explanations.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
-    )
+    return scores, shap_vals
 
+
+def _record_prediction(risk_score: float, risk_level: str, top_factors: dict, username: str) -> None:
     try:
         engine = get_engine()
         with engine.connect() as conn:
@@ -232,21 +297,112 @@ def predict(request: Request, patient: PatientInput, user: dict = Depends(verify
                 {
                     "score":   risk_score,
                     "level":   risk_level,
-                    "version": MODEL_VERSION,
+                    "version": model_version(),
                     "factors": json.dumps(top_factors),
-                    "user":    user.get("sub", "unknown"),
+                    "user":    username,
                 }
             )
             conn.commit()
     except Exception as e:
         logger.warning(f"Impossible d'enregistrer la prédiction : {e}")
 
+
+# ─── Endpoints ────────────────────────────────────────────────────
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "model_loaded": model is not None,
+        "model_version": model_version(),
+    }
+
+
+@app.post("/token")
+@limiter.limit("10/minute")
+def login(request: Request, body: LoginRequest):
+    user = authenticate_user(body.username, body.password)
+    if user is None:
+        log_audit(body.username, "LOGIN_FAILED", ip=get_remote_address(request))
+        raise HTTPException(status_code=401, detail="Identifiants incorrects")
+    token = create_token(user["username"], user["role"])
+    log_audit(user["username"], "LOGIN", ip=get_remote_address(request))
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@app.post("/predict", response_model=PredictionResponse)
+@limiter.limit("30/minute")
+def predict(request: Request, patient: PatientInput, user: dict = Depends(verify_token)):
+    if model is None:
+        raise HTTPException(status_code=503, detail="Modèle non disponible. Lance train.py d'abord.")
+
+    data_dict = _prepare_row(patient)
+    df_input = pd.DataFrame([data_dict])
+    scores, shap_vals = _score_dataframe(df_input)
+
+    risk_score = float(scores[0])
+    risk_level = _risk_level(risk_score)
+
+    explanations = {
+        feat: round(float(val), 4)
+        for feat, val in zip(feature_names, shap_vals[0])
+    }
+    top_factors = dict(
+        sorted(explanations.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
+    )
+
+    username = user.get("sub", "unknown")
+    _record_prediction(risk_score, risk_level, top_factors, username)
+    log_audit(username, "PREDICT", detail={"risk_level": risk_level}, ip=get_remote_address(request))
+
     return PredictionResponse(
         risk_score=round(risk_score, 4),
         risk_level=risk_level,
         top_factors=top_factors,
-        model_version=MODEL_VERSION,
+        model_version=model_version(),
     )
+
+
+@app.post("/predict/batch", response_model=List[BatchPredictionResponse])
+@limiter.limit("10/minute")
+def predict_batch(request: Request, body: BatchRequest, user: dict = Depends(verify_token)):
+    """
+    Score plusieurs patients en un seul appel (jusqu'à MAX_BATCH_SIZE).
+    Utile pour la comparaison de patients ou l'analyse de cohortes,
+    évite les appels séquentiels multiples depuis le dashboard.
+    """
+    if model is None:
+        raise HTTPException(status_code=503, detail="Modèle non disponible. Lance train.py d'abord.")
+    if len(body.patients) == 0:
+        raise HTTPException(status_code=422, detail="Liste de patients vide")
+    if len(body.patients) > MAX_BATCH_SIZE:
+        raise HTTPException(status_code=422, detail=f"Maximum {MAX_BATCH_SIZE} patients par appel")
+
+    rows = [_prepare_row(p) for p in body.patients]
+    df_input = pd.DataFrame(rows)
+    scores, shap_vals = _score_dataframe(df_input)
+
+    username = user.get("sub", "unknown")
+    results = []
+    for i, patient in enumerate(body.patients):
+        risk_score = float(scores[i])
+        risk_level = _risk_level(risk_score)
+        explanations = {
+            feat: round(float(val), 4)
+            for feat, val in zip(feature_names, shap_vals[i])
+        }
+        top_factors = dict(
+            sorted(explanations.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
+        )
+        _record_prediction(risk_score, risk_level, top_factors, username)
+        results.append(BatchPredictionResponse(
+            patient_label=patient.patient_label,
+            risk_score=round(risk_score, 4),
+            risk_level=risk_level,
+            top_factors=top_factors,
+        ))
+
+    log_audit(username, "PREDICT_BATCH", detail={"n": len(results)}, ip=get_remote_address(request))
+    return results
 
 
 @app.get("/model/info")
@@ -254,22 +410,19 @@ def model_info(user: dict = Depends(verify_token)):
     return model_meta
 
 
-# ─── NOUVEAU : Historique des prédictions ─────────────────────────
+# ─── Historique des prédictions ───────────────────────────────────
 @app.get("/predictions")
 def get_predictions(
+    request:   Request,
     user:      dict = Depends(verify_token),
     limit:     int  = Query(50,  ge=1, le=200),
     offset:    int  = Query(0,   ge=0),
     risk_level: str = Query(None, description="Filtrer par niveau : ÉLEVÉ, MODÉRÉ, FAIBLE"),
 ):
-    """
-    Retourne l'historique paginé des prédictions.
-    Filtrable par niveau de risque.
-    """
+    """Retourne l'historique paginé des prédictions. Filtrable par niveau de risque."""
     try:
         engine = get_engine()
         with engine.connect() as conn:
-            # Filtre optionnel par niveau
             where = "WHERE risk_level = :level" if risk_level else ""
             params = {"limit": limit, "offset": offset}
             if risk_level:
@@ -277,14 +430,7 @@ def get_predictions(
 
             rows = conn.execute(
                 text(f"""
-                    SELECT
-                        id,
-                        risk_score,
-                        risk_level,
-                        model_version,
-                        top_factors,
-                        requested_by,
-                        predicted_at
+                    SELECT id, risk_score, risk_level, model_version, top_factors, requested_by, predicted_at
                     FROM predictions
                     {where}
                     ORDER BY predicted_at DESC
@@ -297,6 +443,8 @@ def get_predictions(
                 text(f"SELECT COUNT(*) FROM predictions {where}"),
                 {"level": risk_level} if risk_level else {},
             ).scalar()
+
+        log_audit(user.get("sub", "unknown"), "VIEW_HISTORY", ip=get_remote_address(request))
 
         return {
             "total":   total,
@@ -320,21 +468,12 @@ def get_predictions(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─── NOUVEAU : Statistiques agrégées ──────────────────────────────
+# ─── Statistiques agrégées ─────────────────────────────────────────
 @app.get("/stats")
 def get_stats(user: dict = Depends(verify_token)):
-    """
-    Statistiques globales pour le dashboard :
-    - Répartition des niveaux de risque
-    - Score moyen / min / max
-    - Évolution des prédictions sur les 30 derniers jours
-    - Top facteurs globaux (agrégation SHAP)
-    """
     try:
         engine = get_engine()
         with engine.connect() as conn:
-
-            # 1. Totaux et répartition par niveau
             dist = conn.execute(text("""
                 SELECT
                     COUNT(*)                                        AS total,
@@ -347,7 +486,6 @@ def get_stats(user: dict = Depends(verify_token)):
                 FROM predictions
             """)).fetchone()
 
-            # 2. Évolution quotidienne (30 derniers jours)
             trend = conn.execute(text("""
                 SELECT
                     DATE(predicted_at)                              AS jour,
@@ -360,14 +498,12 @@ def get_stats(user: dict = Depends(verify_token)):
                 ORDER BY jour
             """)).fetchall()
 
-            # 3. Agrégation des top_factors sur toutes les prédictions
             factors_raw = conn.execute(text("""
                 SELECT top_factors FROM predictions
                 WHERE top_factors IS NOT NULL
                 LIMIT 500
             """)).fetchall()
 
-        # Agrégation Python des facteurs SHAP
         factor_totals: dict = {}
         factor_counts: dict = {}
         for row in factors_raw:
@@ -408,3 +544,47 @@ def get_stats(user: dict = Depends(verify_token)):
     except Exception as e:
         logger.error(f"Erreur /stats : {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Rapport PDF ────────────────────────────────────────────────
+@app.post("/predict/pdf")
+@limiter.limit("10/minute")
+def predict_pdf(request: Request, patient: PatientInput, user: dict = Depends(verify_token)):
+    """Génère un rapport PDF complet pour une prédiction patient."""
+    if model is None:
+        raise HTTPException(status_code=503, detail="Modèle non disponible.")
+
+    data_dict = _prepare_row(patient)
+    df_input = pd.DataFrame([data_dict])
+    scores, shap_vals = _score_dataframe(df_input)
+    risk_score = float(scores[0])
+    risk_level = _risk_level(risk_score)
+
+    top_factors = dict(
+        sorted(
+            {f: float(v) for f, v in zip(feature_names, shap_vals[0])}.items(),
+            key=lambda x: abs(x[1]), reverse=True
+        )[:5]
+    )
+
+    try:
+        from pdf_report import generate_pdf
+        pdf_bytes = generate_pdf(
+            patient_data  = data_dict,
+            risk_score    = risk_score,
+            risk_level    = risk_level,
+            top_factors   = top_factors,
+            model_version = model_version(),
+            requested_by  = user.get("sub", "medecin"),
+            model_auc     = model_meta.get("auc_roc"),
+        )
+        filename = f"rapport_ClinAI_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        log_audit(user.get("sub", "unknown"), "DOWNLOAD_PDF", ip=get_remote_address(request))
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        logger.error(f"Erreur génération PDF : {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur PDF : {str(e)}")
