@@ -185,7 +185,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-tab_predict, tab_history, tab_stats, tab_compare = st.tabs(["  🔍 Nouvelle prédiction  ","  📋 Historique  ","  📊 Statistiques  ","  ⚖️ Comparaison  "])
+tab_predict, tab_history, tab_stats, tab_compare = st.tabs(["   Nouvelle prédiction  ","   Historique  ","  Statistiques  ","   Comparaison  "])
 
 # ══════════════════════════════════════════════════════════════════
 # ONGLET 1 — PRÉDICTION
