@@ -53,10 +53,18 @@ docker-compose exec etl python pipeline.py
 # Étape 2 : Entraîner le modèle
 docker-compose exec ml-service python train.py
 
+# Étape 3 : Créer le premier compte praticien (table `users` vide sur une install neuve)
+docker-compose exec ml-service python /app/scripts/create_user.py --username medecin --role medecin
+# → mot de passe demandé de façon masquée (jamais en argument CLI)
+
 # Dashboard disponible sur :
 # → http://localhost:8501
-# → Utilisateur : medecin  |  Mot de passe : (celui dans .env)
+# → Utilisateur : medecin  |  Mot de passe : (celui saisi à l'étape 3)
 ```
+
+> ⚠️ Sur une installation neuve, la table `users` est vide : tant que l'étape 3
+> n'a pas été exécutée, toute tentative de connexion à l'API ou au dashboard
+> échouera (401), même avec des identifiants qui semblent corrects.
 
 ---
 
@@ -124,9 +132,9 @@ docker-compose exec postgres psql -U diabetes_user -d diabetes_db
 # Consulter les prédictions
 # (dans psql) SELECT * FROM predictions ORDER BY predicted_at DESC LIMIT 10;
 
-# Lancer les tests
-pip install pytest httpx
-pytest tests/ -v
+# Lancer les tests (les tests importent train.py/api.py via /app,
+# ils doivent donc tourner DANS le conteneur ml-service, pas en local)
+docker-compose exec ml-service pytest -v
 
 # Arrêter tous les services
 docker-compose down

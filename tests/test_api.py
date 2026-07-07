@@ -9,11 +9,15 @@ import os
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
 import sys
-sys.path.insert(0, "/app/ml")
+sys.path.insert(0, "/app")
 
-os.environ.setdefault("JWT_SECRET_KEY",       "test_secret_key_pour_les_tests")
-os.environ.setdefault("JWT_ALGORITHM",        "HS256")
-os.environ.setdefault("JWT_EXPIRE_HOURS",     "1")
+# Ces 3 variables sont forcées (pas de setdefault) car le conteneur charge déjà
+# le vrai JWT_SECRET_KEY via env_file: .env — sans ça, le token signé par la
+# fixture valid_token() (avec la clé de test ci-dessous) ne correspondrait pas
+# à la clé utilisée par l'API pour le vérifier, et tout renverrait 401.
+os.environ["JWT_SECRET_KEY"]    = "test_secret_key_pour_les_tests"
+os.environ["JWT_ALGORITHM"]     = "HS256"
+os.environ["JWT_EXPIRE_HOURS"]  = "1"
 os.environ.setdefault("POSTGRES_USER",        "test")
 os.environ.setdefault("POSTGRES_PASSWORD",    "test")
 os.environ.setdefault("POSTGRES_HOST",        "localhost")

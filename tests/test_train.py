@@ -3,10 +3,8 @@ Tests unitaires — train.py (fonctions utilitaires uniquement)
 ================================================================
 On ne lance pas un entraînement XGBoost complet dans les tests (trop lourd/lent),
 on teste uniquement les fonctions pures : seuil optimal, hash de traçabilité.
-
-Lancer avec : pytest tests/test_train.py -v
+Lancer avec : docker-compose exec ml-service pytest tests/test_train.py -v
 """
-
 import sys
 import os
 import numpy as np
@@ -18,7 +16,7 @@ os.environ.setdefault("POSTGRES_PASSWORD", "test")
 os.environ.setdefault("POSTGRES_HOST", "localhost")
 os.environ.setdefault("POSTGRES_DB", "test")
 
-sys.path.insert(0, "/app/ml")
+sys.path.insert(0, "/app")
 
 from train import find_best_threshold, compute_data_hash
 
@@ -26,18 +24,15 @@ from train import find_best_threshold, compute_data_hash
 def test_find_best_threshold_returns_value_in_range():
     rng = np.random.default_rng(42)
     y_true = rng.integers(0, 2, size=500)
-    # proba corrélée au label pour avoir un signal exploitable
     y_proba = np.clip(y_true * 0.6 + rng.normal(0, 0.2, size=500), 0, 1)
     threshold = find_best_threshold(y_true, y_proba)
     assert 0.0 <= threshold <= 1.0
 
 
 def test_find_best_threshold_perfect_separation():
-    y_true = np.array([0, 0, 0, 1, 1, 1])
+    y_true  = np.array([0, 0, 0, 1, 1, 1])
     y_proba = np.array([0.1, 0.1, 0.2, 0.8, 0.9, 0.95])
     threshold = find_best_threshold(y_true, y_proba)
-    # avec une séparation parfaite, le seuil optimal doit permettre
-    # de retrouver exactement les 3 positifs
     y_pred = (y_proba >= threshold).astype(int)
     assert (y_pred == y_true).all()
 

@@ -13,3 +13,4 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+body.json

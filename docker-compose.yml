@@ -16,9 +16,9 @@ services:
     container_name: diabetes-postgres
     env_file: .env
     environment:
-      POSTGRES_USER: diabetes_user
-      POSTGRES_PASSWORD: MettreIciUnMotDePasseForte123!
-      POSTGRES_DB: diabetes_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -27,7 +27,7 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U diabetes_user -d diabetes_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -63,6 +63,16 @@ services:
     volumes:
       - model-storage:/app/models
       - ./ml:/app
+      # Montés en plus de ./ml pour que pytest, exécuté DANS ce conteneur
+      # (là où train.py/api.py vivent réellement, à /app), trouve les tests
+      # et leur config sans dupliquer/déplacer les fichiers.
+      - ./tests:/app/tests
+      - ./conftest.py:/app/conftest.py
+      - ./pytest.ini:/app/pytest.ini
+      # test_pipeline.py teste le code ETL (etl/pipeline.py) : ce service n'a
+      # pas de conteneur "etl" qui reste actif pour y exécuter pytest (il
+      # tourne une fois puis s'arrête), donc on rend etl/ visible ici aussi.
+      - ./etl:/app/etl:ro
     ports:
       - "8000:8000"
     networks:
@@ -72,6 +82,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    restart: unless-stopped
 
   # --- Dashboard Streamlit ---
   streamlit:

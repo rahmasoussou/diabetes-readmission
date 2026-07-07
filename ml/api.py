@@ -271,9 +271,13 @@ def _prepare_row(patient: PatientInput) -> dict:
 
 
 def _risk_level(score: float) -> str:
-    if score >= 0.5:
+    """Niveaux de risque basés sur le seuil optimisé (F1) calculé par train.py
+    et sauvegardé dans model_meta.json, plutôt que sur un seuil arbitraire codé en dur."""
+    best_threshold = model_meta.get("best_threshold", 0.5)
+    moderate_threshold = best_threshold * 0.6  # zone tampon avant le seuil optimal
+    if score >= best_threshold:
         return "ÉLEVÉ"
-    elif score >= 0.3:
+    elif score >= moderate_threshold:
         return "MODÉRÉ"
     return "FAIBLE"
 

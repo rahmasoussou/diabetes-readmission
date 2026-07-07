@@ -84,7 +84,12 @@ def build_features(df: pd.DataFrame, encoders: dict = None) -> pd.DataFrame:
         if col in df.columns and encoders and col in encoders:
             le   = encoders[col]
             vals = df[col].fillna("No").astype(str)
-            vals = vals.apply(lambda x: x if x in le.classes_ else "No")
+            # Catégorie jamais vue à l'entraînement (ex. nouvelle valeur de `race`
+            # en production) : "No" n'existe que pour les colonnes médicaments,
+            # pas pour race/gender/a1c_result/etc. On retombe sur la première
+            # classe connue de l'encodeur plutôt que de planter avec une 500.
+            fallback = "No" if "No" in le.classes_ else le.classes_[0]
+            vals = vals.apply(lambda x: x if x in le.classes_ else fallback)
             features[col + "_enc"] = le.transform(vals)
         else:
             features[col + "_enc"] = 0

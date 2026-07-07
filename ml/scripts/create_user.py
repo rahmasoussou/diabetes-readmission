@@ -2,7 +2,7 @@
 Créer / mettre à jour un compte praticien dans la table `users`.
 ================================================================
 Usage :
-  docker-compose exec ml-service python /app/ml/scripts/create_user.py \
+  docker-compose exec ml-service python /app/scripts/create_user.py \
       --username medecin --role medecin
 
   (le mot de passe est demandé de façon masquée, jamais en argument CLI)

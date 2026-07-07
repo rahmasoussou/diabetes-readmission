@@ -15,12 +15,14 @@ import os
 import logging
 import joblib
 import json
+import hashlib
 import numpy as np
 import pandas as pd
 import xgboost as xgb
 import shap
 from sqlalchemy import create_engine
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import (
     roc_auc_score, classification_report,
     confusion_matrix, average_precision_score,
@@ -53,6 +55,14 @@ def load_from_db(engine) -> pd.DataFrame:
     return df
 
 
+def compute_data_hash(df: pd.DataFrame) -> str:
+    """Hash de traçabilité du DataFrame d'entraînement — 10 premiers caractères du SHA256.
+    Permet de savoir, a posteriori, si un modèle a été entraîné sur exactement
+    le même jeu de données (traçabilité / reproductibilité)."""
+    h = hashlib.sha256(pd.util.hash_pandas_object(df, index=True).values.tobytes())
+    return h.hexdigest()[:10]
+
+
 def find_best_threshold(y_true, y_proba) -> float:
     """Trouve le seuil qui maximise le F1-score sur la classe positive."""
     precisions, recalls, thresholds = precision_recall_curve(y_true, y_proba)
@@ -65,6 +75,10 @@ def find_best_threshold(y_true, y_proba) -> float:
 
 def train(df: pd.DataFrame) -> None:
 
+    # 0. Traçabilité : hash du jeu de données utilisé pour cet entraînement
+    data_hash = compute_data_hash(df)
+    logger.info(f"  → Hash de traçabilité du dataset : {data_hash}")
+
     # 1. Features
     encoders = fit_encoders(df)
     X = build_features(df, encoders)
@@ -73,15 +87,19 @@ def train(df: pd.DataFrame) -> None:
     feature_names = list(X.columns)
     logger.info(f"  → {len(feature_names)} features construites (v2)")
 
-    # 2. Split stratifié
+    # 2. Split stratifié : train / test, puis un sous-split calibration dans train
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
-    logger.info(f"  → Train: {len(X_train)} | Test: {len(X_test)}")
-    logger.info(f"  → Positifs train: {y_train.mean():.2%} | test: {y_test.mean():.2%}")
+    # Sous-split dédié à la calibration + early stopping, JAMAIS vu par le test final
+    X_fit, X_calib, y_fit, y_calib = train_test_split(
+        X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
+    )
+    logger.info(f"  → Fit: {len(X_fit)} | Calib: {len(X_calib)} | Test: {len(X_test)}")
+    logger.info(f"  → Positifs fit: {y_fit.mean():.2%} | calib: {y_calib.mean():.2%} | test: {y_test.mean():.2%}")
 
     # 3. Déséquilibre de classes
-    scale_pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
+    scale_pos_weight = (y_fit == 0).sum() / (y_fit == 1).sum()
     logger.info(f"  → scale_pos_weight = {scale_pos_weight:.2f}")
 
     # 4. XGBoost — hyperparamètres optimisés pour données médicales
@@ -104,17 +122,25 @@ def train(df: pd.DataFrame) -> None:
     )
 
     model.fit(
-        X_train, y_train,
-        eval_set=[(X_test, y_test)],
+        X_fit, y_fit,
+        eval_set=[(X_calib, y_calib)],
         verbose=100,
     )
     logger.info(f"  → Meilleure itération : {model.best_iteration}")
 
-    # 5. Évaluation
-    y_pred_proba = model.predict_proba(X_test)[:, 1]
+    # 4bis. Calibration des probabilités (isotonic, sur le split calibration —
+    # jamais utilisé pour l'entraînement des arbres). Sans ça, les scores XGBoost
+    # bruts sont bien classés (bon AUC) mais mal calibrés en valeur absolue
+    # (ex. un score de 0.8 ne correspond pas vraiment à 80% de risque réel).
+    calibrated_model = CalibratedClassifierCV(model, method="isotonic", cv="prefit")
+    calibrated_model.fit(X_calib, y_calib)
 
-    # Seuil optimisé
-    best_threshold = find_best_threshold(y_train, model.predict_proba(X_train)[:, 1])
+    # 5. Évaluation — sur le test final, jamais touché ni par le fit ni par la calibration
+    y_pred_proba = calibrated_model.predict_proba(X_test)[:, 1]
+
+    # Seuil optimisé — recalculé sur les probabilités CALIBRÉES (le seuil change
+    # après calibration, on ne peut pas réutiliser un seuil trouvé avant)
+    best_threshold = find_best_threshold(y_calib, calibrated_model.predict_proba(X_calib)[:, 1])
     y_pred = (y_pred_proba >= best_threshold).astype(int)
 
     auc  = roc_auc_score(y_test, y_pred_proba)
@@ -153,7 +179,9 @@ def train(df: pd.DataFrame) -> None:
     logger.info(f"Cross-val AUC-ROC : {cv_auc.mean():.4f} ± {cv_auc.std():.4f}")
     logger.info(f"Cross-val AUC-PR  : {cv_ap.mean():.4f} ± {cv_ap.std():.4f}")
 
-    # 7. SHAP
+    # 7. SHAP — basé sur le modèle XGBoost brut (TreeExplainer ne supporte pas le
+    # wrapper de calibration). La calibration ne fait que recalibrer l'échelle des
+    # probabilités, elle ne change pas l'ordre d'importance des features.
     logger.info("Construction de l'explainer SHAP...")
     explainer = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(X_test.iloc[:200])
@@ -166,26 +194,30 @@ def train(df: pd.DataFrame) -> None:
     ).sort_values(ascending=False)
     logger.info(f"  → Top 5 features SHAP :\n{mean_shap.head()}")
 
-    # 8. Sauvegardes
+    # 8. Sauvegardes — on sauvegarde le modèle CALIBRÉ : c'est lui que l'API
+    # charge et utilise pour predict_proba (interface identique à XGBClassifier).
     os.makedirs("/app/models", exist_ok=True)
-    joblib.dump(model,     MODEL_PATH)
-    joblib.dump(explainer, EXPLAINER_PATH)
+    joblib.dump(calibrated_model, MODEL_PATH)
+    joblib.dump(explainer,        EXPLAINER_PATH)
     save_artifacts(encoders, feature_names)
 
     meta = {
-        "version":          "v2",
-        "auc_roc":          round(auc, 4),
-        "auc_pr":           round(ap, 4),
-        "f1_score":         round(f1, 4),
-        "best_threshold":   round(best_threshold, 4),
-        "cv_auc_mean":      round(float(cv_auc.mean()), 4),
-        "cv_auc_std":       round(float(cv_auc.std()), 4),
-        "cv_ap_mean":       round(float(cv_ap.mean()), 4),
-        "n_train":          len(X_train),
-        "n_test":           len(X_test),
-        "feature_count":    len(feature_names),
-        "best_iteration":   model.best_iteration,
-        "n_features_v2":    len(feature_names),
+        "version":            "v2",
+        "data_hash":          data_hash,
+        "auc_roc":            round(auc, 4),
+        "auc_pr":             round(ap, 4),
+        "f1_score":           round(f1, 4),
+        "best_threshold":     round(best_threshold, 4),
+        "calibration_method": "isotonic",
+        "cv_auc_mean":        round(float(cv_auc.mean()), 4),
+        "cv_auc_std":         round(float(cv_auc.std()), 4),
+        "cv_ap_mean":         round(float(cv_ap.mean()), 4),
+        "n_fit":              len(X_fit),
+        "n_calib":            len(X_calib),
+        "n_test":             len(X_test),
+        "feature_count":      len(feature_names),
+        "best_iteration":     model.best_iteration,
+        "n_features_v2":      len(feature_names),
     }
     with open("/app/models/model_meta.json", "w") as f:
         json.dump(meta, f, indent=2)

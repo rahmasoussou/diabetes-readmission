@@ -8,7 +8,7 @@ import sys
 import pandas as pd
 import pytest
 
-sys.path.insert(0, "/app/ml")
+sys.path.insert(0, "/app")
 
 from features import (
     _diag_group, fit_encoders, build_features,
