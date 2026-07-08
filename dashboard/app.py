@@ -139,15 +139,20 @@ with st.sidebar:
     st.markdown(f'<div style="background:{"#0d1f3c" if D else "#EFF6FF"};border-radius:10px;padding:0.75rem 1rem;margin-bottom:1.2rem;"><div style="color:{MUTED};font-size:0.78rem;">👤 Connecté</div><div style="color:{ACCENT};font-weight:700;">{st.session_state.username}</div></div>', unsafe_allow_html=True)
 
     st.markdown(f'<div class="section-label">Modèle actif</div>', unsafe_allow_html=True)
+    model_meta_info = {}
     try:
         r = requests.get(f"{API_URL}/model/info", headers=api_headers(), timeout=3)
         if r.status_code == 200:
             m = r.json()
+            model_meta_info = m
             c1,c2 = st.columns(2)
             c1.metric("AUC-ROC", m.get("auc_roc","—"))
             c2.metric("AUC-PR",  m.get("auc_pr","—"))
             if m.get("f1_score"): st.metric("F1-Score", m.get("f1_score","—"))
-            st.markdown(f'<div style="color:{MUTED};font-size:0.75rem;font-family:JetBrains Mono,monospace;margin-top:0.4rem;">{m.get("feature_count","?")} features · {m.get("n_train",0):,} patients</div>', unsafe_allow_html=True)
+            n_total = m.get("n_fit",0) + m.get("n_calib",0) + m.get("n_test",0)
+            st.markdown(f'<div style="color:{MUTED};font-size:0.75rem;font-family:JetBrains Mono,monospace;margin-top:0.4rem;">{m.get("feature_count","?")} features · {n_total:,} patients</div>', unsafe_allow_html=True)
+            if m.get("calibration_method"):
+                st.markdown(f'<div style="color:{MUTED};font-size:0.72rem;margin-top:0.2rem;">Probabilités calibrées ({m.get("calibration_method")})</div>', unsafe_allow_html=True)
     except: st.markdown(f'<div style="color:{MUTED};font-size:0.82rem;">Infos modèle indisponibles</div>', unsafe_allow_html=True)
 
     st.markdown(f'<hr style="border:none;border-top:1px solid {BORDER};margin:1rem 0;">', unsafe_allow_html=True)
@@ -166,8 +171,21 @@ with st.sidebar:
     st.markdown(f'<hr style="border:none;border-top:1px solid {BORDER};margin:1rem 0;">', unsafe_allow_html=True)
     st.markdown(f'<div class="section-label">Seuils de risque</div>', unsafe_allow_html=True)
     st.caption("Ajuste les seuils selon ta tolérance clinique")
-    seuil_eleve  = st.slider("Seuil risque élevé (%)",  min_value=30, max_value=80, value=50, step=5, key="seuil_eleve")
-    seuil_modere = st.slider("Seuil risque modéré (%)", min_value=10, max_value=max(seuil_eleve-5,15), value=min(30,seuil_eleve-5), step=5, key="seuil_modere")
+    # Préremplis à partir du seuil optimisé par train.py (model_meta["best_threshold"]),
+    # PAS de valeurs fixes 50%/30% : après calibration, un modèle entraîné sur une
+    # classe positive rare (~9% ici) produit des scores réalistes bien en dessous
+    # de 50% même pour les patients à risque réel. Avec un seuil fixe à 50%, quasi
+    # aucun patient n'atteindrait jamais "ÉLEVÉ", quel que soit son profil clinique.
+    _best_thr = model_meta_info.get("best_threshold")
+    if _best_thr is not None:
+        default_eleve_pct  = max(round(_best_thr * 100), 5)
+        default_modere_pct = max(round(_best_thr * 100 * 0.6), 2)
+    else:
+        default_eleve_pct, default_modere_pct = 50, 30
+    seuil_eleve  = st.slider("Seuil risque élevé (%)",  min_value=5,  max_value=80, value=default_eleve_pct,  step=1, key="seuil_eleve")
+    seuil_modere = st.slider("Seuil risque modéré (%)", min_value=1, max_value=max(seuil_eleve-1,2), value=min(default_modere_pct,seuil_eleve-1), step=1, key="seuil_modere")
+    if _best_thr is not None:
+        st.caption(f"Seuil optimisé par le modèle (max F1) : {_best_thr*100:.1f}%")
     st.markdown(f'<div style="background:{"#0d1626" if D else "#EFF6FF"};border-radius:8px;padding:0.6rem 0.8rem;font-size:0.78rem;color:{MUTED};margin-top:0.3rem;">Faible : 0-{seuil_modere}% | Modéré : {seuil_modere}-{seuil_eleve}% | Élevé : {seuil_eleve}-100%</div>', unsafe_allow_html=True)
     st.markdown(f'<hr style="border:none;border-top:1px solid {BORDER};margin:1rem 0;">', unsafe_allow_html=True)
     if st.button("Déconnexion", use_container_width=True): st.session_state.token=None; st.rerun()
@@ -185,7 +203,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-tab_predict, tab_history, tab_stats, tab_compare = st.tabs(["   Nouvelle prédiction  ","   Historique  ","  Statistiques  ","   Comparaison  "])
+tab_predict, tab_history, tab_stats, tab_compare = st.tabs(["  🔍 Nouvelle prédiction  ","  📋 Historique  ","  📊 Statistiques  ","  ⚖️ Comparaison  "])
 
 # ══════════════════════════════════════════════════════════════════
 # ONGLET 1 — PRÉDICTION
@@ -249,8 +267,9 @@ with tab_predict:
                         color_map = {"ÉLEVÉ":"#EF4444","MODÉRÉ":"#F59E0B","FAIBLE":"#22C55E"}
                         gauge_color = color_map.get(level,"#1B4FD8")
                         fig = go.Figure(go.Indicator(
-                            mode="gauge", value=round(score*100,1),
+                            mode="gauge+number", value=round(score*100,1),
                             domain={"x": [0, 1], "y": [0, 1]},
+                            number={"suffix":"%","font":{"size":36,"color":gauge_color,"family":"DM Serif Display"}},
                             gauge={"axis":{"range":[0,100],"tickcolor":BORDER,"tickfont":{"color":MUTED,"size":11}},
                                    "bar":{"color":gauge_color,"thickness":0.22},"bgcolor":CARD,
                                    "bordercolor":BORDER,"borderwidth":1,
@@ -259,8 +278,7 @@ with tab_predict:
                                             {"range":[50,100],"color":"#FEF2F2" if not D else "#1f1315"}],
                                    "threshold":{"line":{"color":"#EF4444","width":2},"value":st.session_state.get("seuil_eleve",50)}}))
                         fig.update_layout(height=220,margin=dict(t=20,b=0,l=20,r=20),paper_bgcolor=PLOTBG,plot_bgcolor=PLOTBG,font=dict(family="DM Sans"))
-                        st.plotly_chart(fig, use_container_width=True, key=f"gauge_main_{score:.4f}")
-                        st.markdown(f'<div style="text-align:center;margin-top:-95px;margin-bottom:35px;font-family:\'DM Serif Display\',serif;font-size:2.2rem;font-weight:700;color:{gauge_color};pointer-events:none;">{score:.1%}</div>', unsafe_allow_html=True)
+                        st.plotly_chart(fig, use_container_width=True)
                         css = {"ÉLEVÉ":"risk-high","MODÉRÉ":"risk-medium","FAIBLE":"risk-low"}[level]
                         ico = {"ÉLEVÉ":"🔴","MODÉRÉ":"🟡","FAIBLE":"🟢"}[level]
                         st.markdown(f'<div class="{css}"><b style="font-size:1rem;">{ico} Risque {level}</b><span style="float:right;font-family:JetBrains Mono,monospace;font-size:0.9rem;">{score:.1%}</span></div>', unsafe_allow_html=True)
@@ -555,8 +573,9 @@ with tab_compare:
                     rc1, rc2 = st.columns(2)
                     with rc1:
                         fig1 = go.Figure(go.Indicator(
-                            mode="gauge", value=round(s1*100,1),
+                            mode="gauge+number", value=round(s1*100,1),
                             domain={"x":[0,1],"y":[0,1]},
+                            number={"suffix":"%","font":{"size":38,"color":color_map[l1]}},
                             title={"text":"Patient A","font":{"size":13,"color":MUTED}},
                             gauge={"axis":{"range":[0,100],"tickcolor":BORDER},
                                    "bar":{"color":color_map[l1],"thickness":0.22},
@@ -566,14 +585,14 @@ with tab_compare:
                                             {"range":[seuil_e*100,100],"color":"#FEF2F2" if not D else "#1f1315"}],
                                    "threshold":{"line":{"color":"#EF4444","width":2},"value":seuil_e*100}}))
                         fig1.update_layout(height=280,margin=dict(t=40,b=20,l=30,r=30),paper_bgcolor=PLOTBG,plot_bgcolor=PLOTBG)
-                        st.plotly_chart(fig1, use_container_width=True, key=f"gauge_cmp_a_{s1:.4f}")
-                        st.markdown(f'<div style="text-align:center;margin-top:-115px;margin-bottom:35px;font-family:\'DM Serif Display\',serif;font-size:1.9rem;font-weight:700;color:{color_map[l1]};pointer-events:none;">{s1:.1%}</div>', unsafe_allow_html=True)
+                        st.plotly_chart(fig1, use_container_width=True)
                         st.markdown(f'<div class="{css_map[l1]}" style="text-align:center;"><b>{ico_map[l1]} Risque {l1}</b> — {s1:.1%}</div>', unsafe_allow_html=True)
 
                     with rc2:
                         fig2 = go.Figure(go.Indicator(
-                            mode="gauge", value=round(s2*100,1),
+                            mode="gauge+number", value=round(s2*100,1),
                             domain={"x":[0,1],"y":[0,1]},
+                            number={"suffix":"%","font":{"size":38,"color":color_map[l2]}},
                             title={"text":"Patient B","font":{"size":13,"color":MUTED}},
                             gauge={"axis":{"range":[0,100],"tickcolor":BORDER},
                                    "bar":{"color":color_map[l2],"thickness":0.22},
@@ -583,8 +602,7 @@ with tab_compare:
                                             {"range":[seuil_e*100,100],"color":"#FEF2F2" if not D else "#1f1315"}],
                                    "threshold":{"line":{"color":"#EF4444","width":2},"value":seuil_e*100}}))
                         fig2.update_layout(height=280,margin=dict(t=40,b=20,l=30,r=30),paper_bgcolor=PLOTBG,plot_bgcolor=PLOTBG)
-                        st.plotly_chart(fig2, use_container_width=True, key=f"gauge_cmp_b_{s2:.4f}")
-                        st.markdown(f'<div style="text-align:center;margin-top:-115px;margin-bottom:35px;font-family:\'DM Serif Display\',serif;font-size:1.9rem;font-weight:700;color:{color_map[l2]};pointer-events:none;">{s2:.1%}</div>', unsafe_allow_html=True)
+                        st.plotly_chart(fig2, use_container_width=True)
                         st.markdown(f'<div class="{css_map[l2]}" style="text-align:center;"><b>{ico_map[l2]} Risque {l2}</b> — {s2:.1%}</div>', unsafe_allow_html=True)
 
                     # Verdict
