@@ -1,0 +1,17 @@
+{
+  "label_encoder": {
+    "auc_roc": 0.6118,
+    "auc_pr": 0.1385,
+    "n_features": 35
+  },
+  "one_hot": {
+    "auc_roc": 0.6126,
+    "auc_pr": 0.1413,
+    "n_features": 50
+  },
+  "conclusion": {
+    "delta_auc_roc": 0.0008,
+    "delta_auc_pr": 0.0028,
+    "verdict": "Différence négligeable — pas d'impact significatif"
+  }
+}

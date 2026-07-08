@@ -73,6 +73,10 @@ services:
       # pas de conteneur "etl" qui reste actif pour y exécuter pytest (il
       # tourne une fois puis s'arrête), donc on rend etl/ visible ici aussi.
       - ./etl:/app/etl:ro
+      # Données brutes (lecture seule) : nécessaires à l'expérience #2
+      # (GroupKFold par patient sur TOUTES les rencontres, pas seulement
+      # la version dédupliquée déjà chargée en base par l'ETL).
+      - ./data:/app/data:ro
     ports:
       - "8000:8000"
     networks:
