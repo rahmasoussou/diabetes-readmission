@@ -1,7 +1,7 @@
 """
 Expérience #2 — Toutes les rencontres + split groupé par patient
 ====================================================================
-Suggestion de l'encadrante : au lieu de ne garder qu'une rencontre par
+ au lieu de ne garder qu'une rencontre par
 patient (la déduplication actuelle dans etl/pipeline.py, qui jette
 beaucoup de données), on peut garder TOUTES les rencontres — à condition
 de s'assurer qu'un même patient n'est jamais à la fois dans le train et

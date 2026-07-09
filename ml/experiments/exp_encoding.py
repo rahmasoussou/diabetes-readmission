@@ -1,7 +1,7 @@
 """
 Expérience #1 — LabelEncoder vs One-Hot pour les variables nominales
 =======================================================================
-Suggestion de l'encadrante : le LabelEncoder actuel impose un ordre
+ le LabelEncoder actuel impose un ordre
 artificiel sur des catégories qui n'en ont pas (ex. race : Caucasian=0,
 AfricanAmerican=1, Hispanic=2... le modèle peut "croire" que 2 > 1 > 0
 a un sens, alors que ce sont juste des étiquettes).
