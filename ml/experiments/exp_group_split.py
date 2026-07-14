@@ -1,6 +1,6 @@
 """
 Expérience #2 — Toutes les rencontres + split groupé par patient
-====================================================================
+
  au lieu de ne garder qu'une rencontre par
 patient (la déduplication actuelle dans etl/pipeline.py, qui jette
 beaucoup de données), on peut garder TOUTES les rencontres — à condition

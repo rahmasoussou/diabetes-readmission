@@ -20,8 +20,6 @@ Interprétation :
 Répété sur plusieurs graines aléatoires pour ne pas conclure sur un seul
 tirage de sous-échantillon.
 
-Ceci est une EXPÉRIENCE, pas un correctif : ne touche pas à train.py, à
-features.py, ni à etl/pipeline.py de production.
 
 Lancer avec :
   docker-compose exec ml-service python experiments/exp_control_subsample.py

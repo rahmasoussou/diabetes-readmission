@@ -1,6 +1,6 @@
 """
 Expérience #2 bis — GroupKFold à 5 plis (stabilité du gain)
-====================================================================
+
 Suite demandée après exp_group_split.py : le gain observé sur UN SEUL
 split groupé (+0.034 AUC-ROC) pourrait être un effet de tirage favorable.
 Ce script répète la comparaison sur 5 plis (GroupKFold, toujours groupé

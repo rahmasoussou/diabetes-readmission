@@ -1,6 +1,6 @@
 """
 Expérience #1 — LabelEncoder vs One-Hot pour les variables nominales
-=======================================================================
+
  le LabelEncoder actuel impose un ordre
 artificiel sur des catégories qui n'en ont pas (ex. race : Caucasian=0,
 AfricanAmerican=1, Hispanic=2... le modèle peut "croire" que 2 > 1 > 0
@@ -15,8 +15,7 @@ change_in_meds, diabetes_meds (les colonnes médicaments restent identiques
 dans les deux versions — un one-hot sur 21 médicaments x ~4 niveaux
 ajouterait ~80 colonnes creuses, hors du périmètre de ce test ciblé).
 
-Ceci est une EXPÉRIENCE, pas un correctif : ne touche pas à train.py ni à
-features.py de production. Résultat documenté dans experiments/README.md
+ Résultat documenté dans experiments/README.md
 qu'on que la conclusion soit positive ou négative.
 
 Lancer avec :
