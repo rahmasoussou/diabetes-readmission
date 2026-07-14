@@ -63,11 +63,14 @@ def _diag_group(code: str) -> int:
 
 
 def fit_encoders(df: pd.DataFrame) -> dict:
+    """Un LabelEncoder par colonne catégorielle (One-Hot testé et abandonné —
+    gain non significatif, cf. experiments/exp_encoding.py)."""
     encoders = {}
     for col in CATEGORICAL_FEATURES:
         if col in df.columns:
             le = LabelEncoder()
-            le.fit(df[col].fillna("No").astype(str))
+            vals = df[col].fillna("No").astype(str)
+            le.fit(vals)
             encoders[col] = le
     return encoders
 
