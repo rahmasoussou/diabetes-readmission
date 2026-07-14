@@ -1,0 +1,34 @@
+{
+  "target_n": 56000,
+  "repeats": [
+    {
+      "auc_roc": 0.6504,
+      "auc_pr": 0.2069,
+      "n_train": 44726,
+      "n_test": 11274,
+      "seed": 42,
+      "overlap_check": 0,
+      "prevalence": 0.1145
+    },
+    {
+      "auc_roc": 0.6477,
+      "auc_pr": 0.2236,
+      "n_train": 44685,
+      "n_test": 11315,
+      "seed": 7,
+      "overlap_check": 0,
+      "prevalence": 0.1122
+    },
+    {
+      "auc_roc": 0.6267,
+      "auc_pr": 0.1948,
+      "n_train": 44817,
+      "n_test": 11183,
+      "seed": 123,
+      "overlap_check": 0,
+      "prevalence": 0.1132
+    }
+  ],
+  "auc_roc_mean": 0.6416,
+  "auc_roc_std": 0.0106
+}
