@@ -48,10 +48,13 @@ def test_clean_data_excludes_deaths(raw_df):
     assert 3 not in cleaned["encounter_id"].values
 
 
-def test_clean_data_deduplicates_by_patient(raw_df):
+def test_clean_data_keeps_all_encounters(raw_df):
+    """v3 : plus de déduplication — toutes les rencontres d'un même patient
+    sont conservées. La fuite est empêchée côté ml/train.py (split groupé
+    par patient_nbr), pas côté ETL."""
     cleaned = clean_data(raw_df)
-    # patient_nbr=100 apparaît deux fois -> une seule ligne conservée
-    assert (cleaned["patient_nbr"] == 100).sum() == 1
+    # patient_nbr=100 apparaît deux fois dans raw_df -> les deux doivent être conservées
+    assert (cleaned["patient_nbr"] == 100).sum() == 2
 
 
 def test_clean_data_creates_binary_target(raw_df):
