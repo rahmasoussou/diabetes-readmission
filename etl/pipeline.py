@@ -66,9 +66,12 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     if "discharge_disposition_id" in df.columns:
         df = df[~df["discharge_disposition_id"].isin([11, 13, 14, 19, 20, 21])]
 
-    # Dédupliquer par patient (garder premier séjour)
-    df = df.drop_duplicates(subset="patient_nbr", keep="first")
-    logger.info(f"  → {df.shape[0]} lignes après déduplication")
+    # v3 : on garde TOUTES les rencontres (expérience validée — le signal des
+    # patients récurrents améliore l'AUC, confirmé par GroupKFold 5 plis +
+    # test de contrôle). Le split par patient (côté ml/train.py) empêche
+    # toute fuite : un même patient_nbr ne peut jamais être à la fois dans
+    # le train et dans le test.
+    logger.info(f"  → {df.shape[0]} lignes conservées (toutes rencontres, pas de déduplication)")
 
     # Cible binaire
     df["readmitted_30"] = (df["readmitted"] == "<30").astype(int)

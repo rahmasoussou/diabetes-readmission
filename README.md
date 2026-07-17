@@ -15,6 +15,34 @@ Tous les services tournent sur le réseau Docker isolé `diabetes-net`.
 
 ---
 
+
+## Méthodologie (v3) — toutes les rencontres + split par patient
+
+Depuis la v3, le pipeline a évolué sur deux points, validés par expérimentation
+(voir `experiments/`) :
+
+- **ETL (`etl/pipeline.py`)** : toutes les rencontres sont conservées (plus de
+  déduplication par patient). Un même patient peut avoir plusieurs lignes en
+  base (une par hospitalisation).
+- **Entraînement (`ml/train.py`)** : pour éviter toute fuite de données, le
+  split train/validation/test (fit/calib/test) est **groupé par
+  `patient_nbr`** (`GroupShuffleSplit`) — un même patient ne se retrouve
+  jamais dans deux sous-ensembles différents. L'early stopping s'appuie
+  uniquement sur le jeu de calibration, jamais sur le test.
+
+Résultats (validation croisée `GroupKFold`, 5 plis) :
+
+| Métrique | Valeur |
+|---|---|
+| AUC-ROC | 0,6402 ± 0,0085 |
+| AUC-PR | 0,2034 ± 0,0068 |
+| Recall parmi les 10 % de patients les plus à risque | 0,2121 |
+
+Ce gain a été vérifié comme provenant du signal apporté par les patients
+récurrents (leur historique d'hospitalisations), et non simplement du volume
+de données supplémentaire — voir le test de contrôle dans `experiments/`.
+---
+
 ## Démarrage rapide
 
 ### 1. Prérequis
@@ -97,8 +125,14 @@ diabetes-readmission/
 │   ├── requirements.txt
 │   └── app.py                ← Streamlit
 │
+├── experiments/               ← scripts d'expérimentation (encodage, split
+│                                  par patient, GroupKFold, test de contrôle)
+│
 ├── tests/
-│   └── test_api.py           ← tests pytest
+│   ├── test_api.py
+│   ├── test_features.py
+│   ├── test_pipeline.py
+│   └── test_train.py
 │
 ├── data/raw/                 ← données brutes (non committé)
 └── models/                   ← modèles entraînés (non committé)
@@ -149,7 +183,8 @@ docker-compose down -v
 
 **Diabetes 130-US Hospitals for Years 1999–2008**
 - Source : https://www.kaggle.com/datasets/brandao/diabetes
-- 101 766 séjours hospitaliers
+- 101 766 séjours hospitaliers bruts, 99 343 conservés après nettoyage
+  (toutes les rencontres, sans déduplication par patient depuis la v3)
 - 130 hôpitaux américains
 - 50+ variables cliniques par patient
 
