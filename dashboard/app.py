@@ -203,7 +203,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-tab_predict, tab_history, tab_stats, tab_compare = st.tabs(["  🔍 Nouvelle prédiction  ","  📋 Historique  ","  📊 Statistiques  ","  ⚖️ Comparaison  "])
+tab_predict, tab_history, tab_stats, tab_compare, tab_whatif, tab_modelcard = st.tabs(["  🔍 Nouvelle prédiction  ","  📋 Historique  ","  📊 Statistiques  ","  ⚖️ Comparaison  ","  🧪 What-if  ","  📄 Model Card  "])
 
 # ══════════════════════════════════════════════════════════════════
 # ONGLET 1 — PRÉDICTION
@@ -656,3 +656,257 @@ with tab_compare:
             puis clique sur <b style="color:{ACCENT};">Comparer les deux patients</b>
           </div>
         </div>""", unsafe_allow_html=True)
+# ══════════════════════════════════════════════════════════════════
+# ONGLET 5 — SIMULATEUR WHAT-IF
+# ══════════════════════════════════════════════════════════════════
+with tab_whatif:
+    st.markdown('<div class="section-label">Patient de référence</div>', unsafe_allow_html=True)
+    st.caption("Définis un patient à gauche, puis ajuste les curseurs de scénario à droite — le risque se recalcule automatiquement.")
+
+    col_base, col_sim = st.columns([1, 1.1], gap="large")
+
+    with col_base:
+        with st.expander("👤 Profil du patient", expanded=True):
+            wi_age = st.slider("Âge (années)", 0, 100, 65, key="wi_age")
+            wg1, wg2 = st.columns(2)
+            wi_gender = wg1.selectbox("Genre", ["Female","Male","Unknown"], key="wi_gender")
+            wi_race   = wg2.selectbox("Origine", ["Caucasian","AfricanAmerican","Hispanic","Asian","Other","Unknown"], key="wi_race")
+            wh1, wh2 = st.columns(2)
+            wi_time_hosp = wh1.number_input("Durée (jours)", min_value=1, max_value=30, value=5, key="wi_time_hosp")
+            wi_num_meds  = wh2.number_input("Médicaments", min_value=0, max_value=100, value=15, key="wi_num_meds")
+            wh3, wh4 = st.columns(2)
+            wi_num_lab  = wh3.number_input("Procédures labo", min_value=0, max_value=130, value=40, key="wi_num_lab")
+            wi_num_proc = wh4.number_input("Autres procédures", min_value=0, max_value=10, value=1, key="wi_num_proc")
+            wi_num_diag = st.number_input("Nombre de diagnostics", min_value=1, max_value=16, value=7, key="wi_num_diag")
+            wp1, wp2, wp3 = st.columns(3)
+            wi_num_out  = wp1.number_input("Ambulatoire", min_value=0, max_value=50, value=0, key="wi_num_out")
+            wi_num_emer = wp2.number_input("Urgences", min_value=0, max_value=50, value=0, key="wi_num_emer")
+            wi_num_inp  = wp3.number_input("Hospitalisé", min_value=0, max_value=20, value=1, key="wi_num_inp")
+            wr1, wr2 = st.columns(2)
+            wi_a1c     = wr1.selectbox("HbA1c", ["None","Norm",">7",">8"], key="wi_a1c")
+            wi_glucose = wr2.selectbox("Glucose sérique", ["None","Norm",">200",">300"], key="wi_glucose")
+            wr3, wr4 = st.columns(2)
+            wi_change_meds  = wr3.selectbox("Changement médication", ["No","Ch"], key="wi_change_meds")
+            wi_diabetes_med = wr4.selectbox("Anti-diabétiques", ["Yes","No"], key="wi_diabetes_med")
+
+    with col_sim:
+        st.markdown('<div class="section-label">Scénario "What-if"</div>', unsafe_allow_html=True)
+        st.caption("Simule une intervention clinique sur ce patient.")
+
+        wi_delta_meds = st.slider("Δ Médicaments (déprescription si négatif)", -10, 10, 0, key="wi_delta_meds")
+        wi_delta_hosp = st.slider("Δ Durée de séjour (jours)", -5, 5, 0, key="wi_delta_hosp")
+        wi_add_outpatient = st.checkbox("➕ Ajouter un suivi ambulatoire (+1 visite)", key="wi_add_outpatient")
+        wi_override_a1c = st.selectbox("Nouveau contrôle HbA1c (optionnel)", ["(inchangé)","None","Norm",">7",">8"], key="wi_override_a1c")
+        wi_override_change = st.selectbox("Changement de médication (optionnel)", ["(inchangé)","No","Ch"], key="wi_override_change")
+
+        sim_num_meds  = max(0, wi_num_meds + wi_delta_meds)
+        sim_time_hosp = max(1, wi_time_hosp + wi_delta_hosp)
+        sim_num_out   = wi_num_out + (1 if wi_add_outpatient else 0)
+        sim_a1c       = wi_a1c if wi_override_a1c == "(inchangé)" else wi_override_a1c
+        sim_change    = wi_change_meds if wi_override_change == "(inchangé)" else wi_override_change
+
+        baseline_payload = {
+            "age_num": wi_age, "gender": wi_gender, "race": wi_race,
+            "time_in_hospital": wi_time_hosp, "num_medications": wi_num_meds,
+            "num_lab_procedures": wi_num_lab, "num_procedures": wi_num_proc,
+            "number_diagnoses": wi_num_diag, "num_outpatient": wi_num_out,
+            "num_emergency": wi_num_emer, "num_inpatient": wi_num_inp,
+            "a1c_result": wi_a1c, "glucose_serum": wi_glucose,
+            "change_in_meds": wi_change_meds, "diabetes_meds": wi_diabetes_med,
+            "patient_label": "Référence",
+        }
+        scenario_payload = {
+            "age_num": wi_age, "gender": wi_gender, "race": wi_race,
+            "time_in_hospital": sim_time_hosp, "num_medications": sim_num_meds,
+            "num_lab_procedures": wi_num_lab, "num_procedures": wi_num_proc,
+            "number_diagnoses": wi_num_diag, "num_outpatient": sim_num_out,
+            "num_emergency": wi_num_emer, "num_inpatient": wi_num_inp,
+            "a1c_result": sim_a1c, "glucose_serum": wi_glucose,
+            "change_in_meds": sim_change, "diabetes_meds": wi_diabetes_med,
+            "patient_label": "Scénario",
+        }
+
+        try:
+            resp = requests.post(
+                f"{API_URL}/predict/batch",
+                json={"patients": [baseline_payload, scenario_payload]},
+                headers=api_headers(), timeout=10,
+            )
+            handle_401(resp)
+            if resp.status_code == 200:
+                res_ref, res_sim = resp.json()
+                s_ref = res_ref["risk_score"]; s_sim = res_sim["risk_score"]
+                delta = (s_sim - s_ref) * 100
+
+                st.markdown(f'<hr style="border:none;border-top:1px solid {BORDER};margin:1rem 0;">', unsafe_allow_html=True)
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Risque de référence", f"{s_ref:.1%}")
+                m2.metric("Risque du scénario", f"{s_sim:.1%}", delta=f"{delta:+.1f} pts", delta_color="inverse")
+                direction = "réduit" if delta < 0 else "augmenté" if delta > 0 else "inchangé"
+                m3.markdown(f'<div style="padding-top:0.6rem;color:{MUTED};font-size:0.85rem;">Le scénario a <b>{direction}</b> le risque.</div>', unsafe_allow_html=True)
+
+                fig_wi = go.Figure(go.Indicator(
+                    mode="gauge+number+delta", value=round(s_sim*100,1),
+                    delta={"reference": round(s_ref*100,1),
+                           "increasing":{"color":"#EF4444"}, "decreasing":{"color":"#22C55E"}},
+                    number={"suffix":"%","font":{"size":34}},
+                    gauge={"axis":{"range":[0,100],"tickcolor":BORDER}, "bar":{"color":"#F59E0B","thickness":0.22},
+                           "bgcolor":CARD, "bordercolor":BORDER,
+                           "threshold":{"line":{"color":"#1B4FD8","width":3}, "value":round(s_ref*100,1)}},
+                ))
+                fig_wi.update_layout(height=260, margin=dict(t=30,b=10,l=30,r=30), paper_bgcolor=PLOTBG, plot_bgcolor=PLOTBG)
+                st.plotly_chart(fig_wi, use_container_width=True)
+                st.caption("La ligne bleue indique le score de référence ; la jauge affiche le score du scénario avec le delta.")
+
+                st.markdown('<div class="section-label">Facteurs qui ont le plus changé (SHAP)</div>', unsafe_allow_html=True)
+                f_ref = res_ref["top_factors"]; f_sim = res_sim["top_factors"]
+                all_feats = list(set(list(f_ref.keys()) + list(f_sim.keys())))
+                v_ref = [f_ref.get(f,0) for f in all_feats]
+                v_sim = [f_sim.get(f,0) for f in all_feats]
+                fig_diff = go.Figure()
+                fig_diff.add_trace(go.Bar(name="Référence", x=all_feats, y=v_ref, marker_color="#94A3B8"))
+                fig_diff.add_trace(go.Bar(name="Scénario", x=all_feats, y=v_sim, marker_color="#F59E0B"))
+                fig_diff.update_layout(barmode="group", height=280, margin=dict(t=10,b=20,l=10,r=10),
+                                         paper_bgcolor=PLOTBG, plot_bgcolor=PLOTBG,
+                                         font=dict(color=MUTED, family="DM Sans"),
+                                         xaxis=dict(tickangle=-30, gridcolor=GRIDC, linecolor=BORDER),
+                                         yaxis=dict(title="Impact SHAP", gridcolor=GRIDC, linecolor=BORDER),
+                                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig_diff, use_container_width=True)
+            else:
+                st.markdown(f'<div class="alert-err">❌ Erreur API {resp.status_code}</div>', unsafe_allow_html=True)
+        except requests.exceptions.ConnectionError:
+            st.markdown('<div class="alert-err">🔌 API ml-service inaccessible.</div>', unsafe_allow_html=True)
+# ══════════════════════════════════════════════════════════════════
+# ONGLET 6 — MODEL CARD
+# ══════════════════════════════════════════════════════════════════
+with tab_modelcard:
+    st.markdown('<div class="section-label">Fiche modèle (Model Card)</div>', unsafe_allow_html=True)
+    st.caption("Documentation synthétique du modèle actif : usage, données, performance, limites.")
+
+    if not model_meta_info:
+        st.markdown('<div class="alert-warn">⚠️ Informations du modèle indisponibles.</div>', unsafe_allow_html=True)
+    else:
+        m = model_meta_info
+        n_total = m.get("n_fit",0) + m.get("n_calib",0) + m.get("n_test",0)
+
+        # ── Usage prévu ─────────────────────────────────────────
+        st.markdown(f'<div style="background:{CARD};border:1px solid {BORDER};border-radius:12px;padding:1.3rem 1.5rem;margin-bottom:1rem;">'
+                     f'<b style="color:{ACCENT};font-size:1rem;">🎯 Usage prévu</b>'
+                     f'<p style="color:{TEXT};font-size:0.9rem;line-height:1.6;margin-top:0.6rem;margin-bottom:0;">'
+                     f'Outil d\'aide à la décision clinique estimant le risque de réhospitalisation '
+                     f'sous 30 jours pour un patient diabétique hospitalisé. Destiné à <b>compléter</b> le jugement '
+                     f'clinique de l\'équipe soignante — priorisation du suivi post-sortie — et non à s\'y substituer. '
+                     f'Ne doit pas être utilisé comme seul critère de décision médicale.</p></div>',
+                     unsafe_allow_html=True)
+
+        # ── Données d'entraînement ──────────────────────────────
+        st.markdown(f'<div style="background:{CARD};border:1px solid {BORDER};border-radius:12px;padding:1.3rem 1.5rem;margin-bottom:1rem;">'
+                     f'<b style="color:{ACCENT};font-size:1rem;">📊 Données d\'entraînement</b></div>', unsafe_allow_html=True)
+        d1,d2,d3,d4 = st.columns(4)
+        d1.metric("Rencontres totales", f"{m.get('n_encounters_total', n_total):,}")
+        d2.metric("Patients uniques", f"{m.get('n_patients_total','—'):,}" if m.get('n_patients_total') else "—")
+        d3.metric("Features", m.get("feature_count","—"))
+        d4.metric("Version", m.get("version","—"))
+        st.markdown(f'<div style="color:{MUTED};font-size:0.82rem;margin-top:0.3rem;">'
+                     f'Source : Diabetes 130-US Hospitals (1999–2008), 130 hôpitaux américains. '
+                     f'Split : {m.get("split_method","train/test standard")}. '
+                     f'Hash de traçabilité du dataset : <code>{m.get("data_hash","—")}</code>.</div>',
+                     unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Performance (métriques honnêtes) ────────────────────
+        st.markdown(f'<div style="background:{CARD};border:1px solid {BORDER};border-radius:12px;padding:1.3rem 1.5rem;margin-bottom:1rem;">'
+                     f'<b style="color:{ACCENT};font-size:1rem;">📈 Performance</b>'
+                     f'<p style="color:{MUTED};font-size:0.82rem;margin-top:0.4rem;">'
+                     f'Chiffres mesurés par validation croisée GroupKFold (5 plis), split groupé par patient — '
+                     f'aucune fuite de données entre les patients d\'entraînement et de test.</p></div>',
+                     unsafe_allow_html=True)
+        p1,p2,p3,p4 = st.columns(4)
+        p1.metric("AUC-ROC", m.get("groupkfold5_auc_mean", m.get("auc_roc","—")),
+                   f"± {m.get('groupkfold5_auc_std','—')}" if m.get("groupkfold5_auc_std") else None)
+        p2.metric("AUC-PR", m.get("groupkfold5_ap_mean", m.get("auc_pr","—")),
+                   f"± {m.get('groupkfold5_ap_std','—')}" if m.get("groupkfold5_ap_std") else None)
+        p3.metric("F1-Score", m.get("f1_score","—"))
+        p4.metric("Recall top 10% risque", f"{m.get('top10_capture_rate','—')}")
+        st.markdown(f'<div style="color:{MUTED};font-size:0.82rem;margin-top:0.3rem;">'
+                     f'Le recall top 10% signifie : parmi les 10% de patients jugés les plus à risque par le modèle, '
+                     f'{float(m.get("top10_capture_rate",0))*100:.0f}% des vraies réadmissions sous 30 jours sont capturées — '
+                     f'soit environ {float(m.get("top10_capture_rate",0))/0.10:.1f}× mieux qu\'un tri aléatoire.</div>',
+                     unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        # ── Analyse de seuil interactive ─────────────────────────
+        if m.get("threshold_analysis"):
+            st.markdown(f'<div style="background:{CARD};border:1px solid {BORDER};border-radius:12px;padding:1.3rem 1.5rem;margin-bottom:1rem;">'
+                         f'<b style="color:{ACCENT};font-size:1rem;">⚖️ Analyse de seuil</b>'
+                         f'<p style="color:{MUTED};font-size:0.82rem;margin-top:0.4rem;">'
+                         f'Compromis precision / recall selon le seuil choisi, mesuré sur le jeu de test '
+                         f'(jamais utilisé pour entraîner le modèle).</p></div>', unsafe_allow_html=True)
+
+            df_thr = pd.DataFrame(m["threshold_analysis"])
+
+            fig_thr = go.Figure()
+            fig_thr.add_trace(go.Scatter(x=df_thr["threshold"], y=df_thr["precision"],
+                mode="lines+markers", name="Precision", line=dict(color="#1B4FD8", width=2), marker=dict(size=5)))
+            fig_thr.add_trace(go.Scatter(x=df_thr["threshold"], y=df_thr["recall"],
+                mode="lines+markers", name="Recall", line=dict(color="#F59E0B", width=2), marker=dict(size=5)))
+            fig_thr.add_vline(x=m.get("best_threshold", 0.146), line_dash="dash", line_color="#EF4444",
+                annotation_text=f"Seuil actif ({m.get('best_threshold',0):.3f})", annotation_font_size=10,
+                annotation_font_color="#EF4444")
+            fig_thr.update_layout(height=300, margin=dict(t=20,b=20,l=10,r=10),
+                paper_bgcolor=PLOTBG, plot_bgcolor=PLOTBG, font=dict(color=MUTED, family="DM Sans"),
+                xaxis=dict(title="Seuil de décision", gridcolor=GRIDC, linecolor=BORDER),
+                yaxis=dict(title="Score", range=[0,1], gridcolor=GRIDC, linecolor=BORDER),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+            st.plotly_chart(fig_thr, use_container_width=True)
+
+            thr_pick = st.select_slider(
+                "Explorer un seuil précis",
+                options=df_thr["threshold"].tolist(),
+                value=min(df_thr["threshold"], key=lambda x: abs(x - m.get("best_threshold", 0.146))),
+                key="thr_explore",
+            )
+            row = df_thr[df_thr["threshold"] == thr_pick].iloc[0]
+            t1,t2,t3 = st.columns(3)
+            t1.metric("Precision", f"{row['precision']:.1%}")
+            t2.metric("Recall", f"{row['recall']:.1%}")
+            t3.metric("Patients alertés", f"{row['n_alerted']:,} ({row['pct_alerted']:.1%})")
+            st.caption(f"À ce seuil : sur 100 alertes déclenchées, {row['precision']*100:.0f} correspondent à une "
+                       f"vraie réadmission ; sur 100 vraies réadmissions, {row['recall']*100:.0f} sont détectées ; "
+                       f"{row['pct_alerted']*100:.1f}% des patients du jeu de test seraient signalés à l'équipe.")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+        # ── Limites ──────────────────────────────────────────────
+        st.markdown('<div class="alert-warn">'
+                     '⚠️ <b>Limites connues</b><br>'
+                     '<span style="font-size:0.85rem;line-height:1.6;">'
+                     '• Performance modeste (AUC ≈ 0,64) — cohérente avec ce que ce type de données permet honnêtement, '
+                     'mais insuffisante pour un usage diagnostique autonome.<br>'
+                     '• Environ 79% des vraies réadmissions ne figurent pas dans le top 10% des patients jugés à risque.<br>'
+                     '• Données historiques (États-Unis, 1999–2008) : la généralisation à un autre contexte de soins, '
+                     'un autre pays ou une période plus récente n\'est pas garantie.<br>'
+                     '• Le modèle ne capture pas les facteurs sociaux, psychologiques ou d\'accès aux soins, '
+                     'connus pour influencer la réhospitalisation.'
+                     '</span></div>', unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Précautions éthiques ─────────────────────────────────
+        st.markdown('<div class="alert-info">'
+                     'ℹ️ <b>Précautions d\'usage et considérations éthiques</b><br>'
+                     '<span style="font-size:0.85rem;line-height:1.6;">'
+                     '• Le modèle inclut des variables démographiques (âge, genre, origine) : une vigilance est requise '
+                     'pour s\'assurer que la performance reste comparable entre sous-groupes, et non discriminante.<br>'
+                     '• Une prédiction de risque élevé ne doit jamais, seule, restreindre l\'accès d\'un patient à des soins '
+                     'ou ressources — elle doit au contraire déclencher une attention accrue.<br>'
+                     '• Toute prédiction est tracée (journal d\'audit) et attribuable au praticien qui l\'a demandée.<br>'
+                     '• Les probabilités affichées sont calibrées (méthode isotonic) : un score de 20% signifie '
+                     'qu\'environ 1 patient sur 5 avec ce score sera réellement réhospitalisé.'
+                     '</span></div>', unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(f'<div style="color:{MUTED};font-size:0.75rem;text-align:right;">'
+                     f'Fiche générée dynamiquement depuis model_meta.json — dernière version : {m.get("version","—")}</div>',
+                     unsafe_allow_html=True)
