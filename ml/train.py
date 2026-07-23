@@ -32,6 +32,7 @@ from sklearn.metrics import (
     roc_auc_score, classification_report,
     confusion_matrix, average_precision_score,
     f1_score, precision_recall_curve,
+    precision_score, recall_score,
 )
 from dotenv import load_dotenv
 from features import fit_encoders, build_features, save_artifacts
@@ -41,7 +42,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-MODEL_PATH     = "/app/models/xgboost_v1.pkl"
+MODEL_PATH     = "/app/models/xgboost_v3.pkl"
 EXPLAINER_PATH = "/app/models/shap_explainer.pkl"
 
 XGB_PARAMS = dict(
@@ -97,6 +98,25 @@ def top10_capture_rate(y_true, y_proba) -> float:
     n_top = max(1, int(0.10 * len(y_true)))
     order = np.argsort(-y_proba)[:n_top]
     return float(np.asarray(y_true)[order].sum() / max(1, np.asarray(y_true).sum()))
+def threshold_analysis(y_true, y_proba) -> list:
+    """Calcule precision, recall, et % de patients alertés pour une grille
+    de seuils — permet d'afficher le compromis dans le dashboard, sans
+    toucher au modèle ni au seuil de production (best_threshold reste
+    calculé séparément par find_best_threshold)."""
+    thresholds = [round(t, 2) for t in np.arange(0.02, 0.61, 0.02)]
+    y_true = np.asarray(y_true)
+    rows = []
+    for t in thresholds:
+        y_pred_t = (y_proba >= t).astype(int)
+        n_alerted = int(y_pred_t.sum())
+        rows.append({
+            "threshold": t,
+            "precision": round(float(precision_score(y_true, y_pred_t, zero_division=0)), 4),
+            "recall": round(float(recall_score(y_true, y_pred_t, zero_division=0)), 4),
+            "n_alerted": n_alerted,
+            "pct_alerted": round(n_alerted / len(y_true), 4),
+        })
+    return rows
 
 
 def group_split(X, y, groups, test_size=0.2, random_state=42):
@@ -177,6 +197,8 @@ def train(df: pd.DataFrame) -> None:
 
     best_threshold = find_best_threshold(y_calib, calibrated_model.predict_proba(X_calib)[:, 1])
     y_pred = (y_pred_proba >= best_threshold).astype(int)
+    thr_analysis = threshold_analysis(y_test, y_pred_proba)
+    logger.info(f"  → Analyse de seuil calculée sur {len(thr_analysis)} points (jeu de test, jamais vu à l'entraînement)")
 
     auc     = roc_auc_score(y_test, y_pred_proba)
     ap      = average_precision_score(y_test, y_pred_proba)
@@ -231,6 +253,7 @@ def train(df: pd.DataFrame) -> None:
     meta = {
         "version":              "v3",
         "data_hash":            data_hash,
+        "threshold_analysis":   thr_analysis,
         "auc_roc":               round(auc, 4),
         "auc_pr":                round(ap, 4),
         "f1_score":              round(f1, 4),

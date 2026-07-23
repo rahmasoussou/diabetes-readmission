@@ -1,0 +1,53 @@
+name: Tests
+
+# Se déclenche sur chaque push (toutes branches) et sur toute mise à jour
+# d'une pull request vers main — donc automatiquement sur la PR en cours.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du dépôt
+        uses: actions/checkout@v4
+
+      - name: Créer un .env de test (valeurs factices, jamais commit)
+        # docker-compose.yml référence env_file: .env pour chaque service —
+        # ce fichier n'existe jamais dans le dépôt (.gitignore), donc la CI
+        # doit en fournir un elle-même avant de lancer docker compose.
+        # Ces valeurs ne servent à rien en dehors de ce run : aucun des 48
+        # tests ne se connecte réellement à PostgreSQL (tout est mocké dans
+        # test_api.py via patch("api.authenticate_user") / patch("api.model")).
+        run: |
+          cat > .env << 'EOF'
+          POSTGRES_USER=ci_test
+          POSTGRES_PASSWORD=ci_test
+          POSTGRES_DB=ci_test
+          POSTGRES_HOST=postgres
+          JWT_SECRET_KEY=ci_secret_key_never_used_in_production
+          JWT_ALGORITHM=HS256
+          JWT_EXPIRE_HOURS=1
+          DASHBOARD_USERNAME=ci_test
+          DASHBOARD_PASSWORD=ci_test
+          API_HOST=ml-service
+          API_PORT=8000
+          EOF
+
+      - name: Construire l'image ml-service
+        run: docker compose build ml-service
+
+      - name: Lancer la suite de tests (pytest, 48 tests attendus)
+        # --no-deps : aucun des 48 tests ne se connecte réellement à
+        # PostgreSQL (tout est mocké dans test_api.py). Inutile donc
+        # d'attendre/dépendre du démarrage de postgres pour les tests,
+        # ce qui évite aussi les faux échecs liés au healthcheck sur
+        # des runners CI parfois plus lents qu'en local.
+        run: docker compose run --rm --no-deps ml-service pytest -v
+
+      - name: Nettoyer les conteneurs
+        if: always()
+        run: docker compose down -v

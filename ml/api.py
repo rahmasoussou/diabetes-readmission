@@ -88,7 +88,7 @@ encoders      = None
 feature_names = None
 model_meta    = {}
 
-MODEL_CANDIDATES = ["/app/models/xgboost_model.pkl", "/app/models/xgboost_v1.pkl"]
+MODEL_CANDIDATES = ["/app/models/xgboost_v3.pkl", "/app/models/xgboost_model.pkl", "/app/models/xgboost_v1.pkl"]
 
 
 @app.on_event("startup")
