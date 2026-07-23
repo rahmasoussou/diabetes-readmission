@@ -41,7 +41,12 @@ jobs:
         run: docker compose build ml-service
 
       - name: Lancer la suite de tests (pytest, 48 tests attendus)
-        run: docker compose run --rm ml-service pytest -v
+        # --no-deps : aucun des 48 tests ne se connecte réellement à
+        # PostgreSQL (tout est mocké dans test_api.py). Inutile donc
+        # d'attendre/dépendre du démarrage de postgres pour les tests,
+        # ce qui évite aussi les faux échecs liés au healthcheck sur
+        # des runners CI parfois plus lents qu'en local.
+        run: docker compose run --rm --no-deps ml-service pytest -v
 
       - name: Nettoyer les conteneurs
         if: always()
